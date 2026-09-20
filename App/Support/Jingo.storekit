@@ -1,0 +1,94 @@
+{
+  "identifier" : "D65E4EB1",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "7.99",
+      "familyShareable" : true,
+      "internalID" : "6517353511",
+      "localizations" : [
+        {
+          "description" : "Real-time transcription as you speak",
+          "displayName" : "Live Transcription",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.feiyiwang.Jingo.LiveTranscription",
+      "referenceName" : "Live Transcription",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_applicationInternalID" : "1661442906",
+    "_billingGracePeriodEnabled" : false,
+    "_compatibilityTimeRate" : {
+      "3" : 6
+    },
+    "_developerTeamID" : "8A76N862C8",
+    "_disableDialogs" : true,
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 741954366.51209795,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+      {
+        "current" : {
+          "index" : 2,
+          "type" : "generic"
+        },
+        "enabled" : false,
+        "name" : "Load Products"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Purchase"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Verification"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Store Sync"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Subscription Status"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Transaction"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Manage Subscriptions Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Refund Request Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Offer Code Redeem Sheet"
+      }
+    ],
+    "_timeRate" : 13
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

@@ -1,0 +1,374 @@
+{
+  "originHash" : "f5041823b6b775638dcdb110745377cc89704b0b9247c400e790e0952bc4bddb",
+  "pins" : [
+    {
+      "identity" : "audiokit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/AudioKit/AudioKit",
+      "state" : {
+        "revision" : "2ebd422855e4645d3169f83d1765d1c8196b4f46",
+        "version" : "5.6.4"
+      }
+    },
+    {
+      "identity" : "cocoalumberjack",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/CocoaLumberjack/CocoaLumberjack",
+      "state" : {
+        "revision" : "a9ed4b6f9bdedce7d77046f43adfb8ce1fd54114",
+        "version" : "3.9.0"
+      }
+    },
+    {
+      "identity" : "combine-schedulers",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/combine-schedulers",
+      "state" : {
+        "revision" : "114354e8c1667a2edc4993700fb9fa4f90157b56",
+        "version" : "1.2.2"
+      }
+    },
+    {
+      "identity" : "dswaveformimage",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/dmrschmidt/DSWaveformImage",
+      "state" : {
+        "revision" : "4c56578ee10128ee2b2c04c9c5aa73812de722db",
+        "version" : "14.2.2"
+      }
+    },
+    {
+      "identity" : "dynamiccolor",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/yannickl/DynamicColor",
+      "state" : {
+        "revision" : "d9beca13ca85baa50ee29832d0db5129fba69630",
+        "version" : "5.0.1"
+      }
+    },
+    {
+      "identity" : "eventsource",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mattt/EventSource",
+      "state" : {
+        "revision" : "86b5096ac59ab46e66bd1f6377c604bc1dab0bc2",
+        "version" : "1.5.1"
+      }
+    },
+    {
+      "identity" : "fluidaudio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/FluidInference/FluidAudio",
+      "state" : {
+        "revision" : "19600a485baa4998812e4654b70d2bab8f2c9949",
+        "version" : "0.15.5"
+      }
+    },
+    {
+      "identity" : "fluidgradient",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Cindori/FluidGradient",
+      "state" : {
+        "revision" : "9ddda4cf23671ef0228e88681ec6210cb3e0d7f7",
+        "version" : "1.0.0"
+      }
+    },
+    {
+      "identity" : "inject",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/krzysztofzablocki/Inject",
+      "state" : {
+        "branch" : "main",
+        "revision" : "838e614220000a563bbaeba2974236f2c2c51e13"
+      }
+    },
+    {
+      "identity" : "mlx-audio-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Blaizzy/mlx-audio-swift",
+      "state" : {
+        "revision" : "01dec7c9bdce3088a6b6b7ab9f2e403458195efb"
+      }
+    },
+    {
+      "identity" : "mlx-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ml-explore/mlx-swift",
+      "state" : {
+        "revision" : "0bb916c67f4b9e5c682cbe02a42c701c93ab5021",
+        "version" : "0.31.6"
+      }
+    },
+    {
+      "identity" : "mlx-swift-lm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ml-explore/mlx-swift-lm",
+      "state" : {
+        "revision" : "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57",
+        "version" : "3.31.4"
+      }
+    },
+    {
+      "identity" : "popovers",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/aheze/Popovers",
+      "state" : {
+        "revision" : "de44c4dd7271ec6413fe350f7efadb14e5e18dce",
+        "version" : "1.3.2"
+      }
+    },
+    {
+      "identity" : "pow",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/EmergeTools/Pow",
+      "state" : {
+        "revision" : "1b4b1dda28c50b95f0872927ee2226fe8b58950e",
+        "version" : "1.0.6"
+      }
+    },
+    {
+      "identity" : "pulse",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kean/pulse",
+      "state" : {
+        "revision" : "3ac5ee35ab233e900aa484919803d51791d1e351",
+        "version" : "4.2.7"
+      }
+    },
+    {
+      "identity" : "pulseloghandler",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kean/PulseLogHandler",
+      "state" : {
+        "revision" : "7280e980b71a1267099e7751a900fd1e67b7f4bb",
+        "version" : "4.0.1"
+      }
+    },
+    {
+      "identity" : "rollbar-apple",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/rollbar/rollbar-apple",
+      "state" : {
+        "revision" : "2dce6849ca1ecb2154578eed87c48709edd502ff",
+        "version" : "3.3.0"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
+      }
+    },
+    {
+      "identity" : "swift-asn1",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-asn1",
+      "state" : {
+        "revision" : "3b6410f7dee09eb33cdd26260c5fd47fda19b0e2",
+        "version" : "1.7.3"
+      }
+    },
+    {
+      "identity" : "swift-case-paths",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-case-paths",
+      "state" : {
+        "revision" : "cb4cba6a8a46a86db0d37dbe09935ead6b24c91a",
+        "version" : "1.10.0"
+      }
+    },
+    {
+      "identity" : "swift-clocks",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-clocks",
+      "state" : {
+        "revision" : "82440fa0a8b1c381a6d1e8e0fc7bbba53ec63204",
+        "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-collections",
+      "state" : {
+        "revision" : "a0cb0954ecb21e4e31b0070e6ed5674e8556685a",
+        "version" : "1.6.0"
+      }
+    },
+    {
+      "identity" : "swift-composable-architecture",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-composable-architecture",
+      "state" : {
+        "revision" : "377da4061db10d26337a71bb279c506bb951f50f",
+        "version" : "1.26.2"
+      }
+    },
+    {
+      "identity" : "swift-concurrency-extras",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-concurrency-extras",
+      "state" : {
+        "revision" : "5fa253428866f2360c3754e88537f700ed2656b5",
+        "version" : "1.4.1"
+      }
+    },
+    {
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-crypto",
+      "state" : {
+        "revision" : "da9d28d69ebe3894b18376c8f2395c2f37b8448f",
+        "version" : "4.5.2"
+      }
+    },
+    {
+      "identity" : "swift-custom-dump",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-custom-dump",
+      "state" : {
+        "revision" : "4fb9e7cbb4b8f5a7354005db39447f570d6b3e19",
+        "version" : "1.7.3"
+      }
+    },
+    {
+      "identity" : "swift-dependencies",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-dependencies",
+      "state" : {
+        "revision" : "b476cc5761057d8d857de063fe7ac8daecf5c06b",
+        "version" : "1.17.1"
+      }
+    },
+    {
+      "identity" : "swift-huggingface",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-huggingface",
+      "state" : {
+        "revision" : "f2f99991f2d7d8fdb3187e4fd539cd2facf5c13d",
+        "version" : "0.11.0"
+      }
+    },
+    {
+      "identity" : "swift-identified-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-identified-collections",
+      "state" : {
+        "revision" : "322d9ffeeba85c9f7c4984b39422ec7cc3c56597",
+        "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-issue-reporting",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-issue-reporting",
+      "state" : {
+        "revision" : "71c7c9a761d1ca6ed4ccb6ced040fe1c1a39e8e7",
+        "version" : "2.1.0"
+      }
+    },
+    {
+      "identity" : "swift-jinja",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-jinja",
+      "state" : {
+        "revision" : "4588064a20f3fc093c95f2f7d3359999bf30cae5",
+        "version" : "2.5.1"
+      }
+    },
+    {
+      "identity" : "swift-log",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-log",
+      "state" : {
+        "revision" : "e97a6fcb1ab07462881ac165fdbb37f067e205d5",
+        "version" : "1.5.4"
+      }
+    },
+    {
+      "identity" : "swift-navigation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-navigation",
+      "state" : {
+        "revision" : "7e95e5e9ff0a64f6ad8bca59083f8d6ba381b6ff",
+        "version" : "2.11.2"
+      }
+    },
+    {
+      "identity" : "swift-numerics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-numerics",
+      "state" : {
+        "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+        "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-perception",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-perception",
+      "state" : {
+        "revision" : "597afd46249f4a71885b95d26b26cc5b893daf32",
+        "version" : "2.0.12"
+      }
+    },
+    {
+      "identity" : "swift-sharing",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-sharing",
+      "state" : {
+        "revision" : "3552faf8a6c18ce896ec5a72bd8c34755f0f03e0",
+        "version" : "2.10.1"
+      }
+    },
+    {
+      "identity" : "swift-snapshot-testing",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/swift-snapshot-testing",
+      "state" : {
+        "revision" : "98ba2e1a302c405dd8752e9fcacef0d5f500cac9",
+        "version" : "1.19.5"
+      }
+    },
+    {
+      "identity" : "swift-syntax",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-syntax",
+      "state" : {
+        "revision" : "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1",
+        "version" : "603.0.2"
+      }
+    },
+    {
+      "identity" : "swift-transformers",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-transformers",
+      "state" : {
+        "revision" : "c21fdcde390313a6d98d8e33a346f2c3486c3ab0",
+        "version" : "1.3.4"
+      }
+    },
+    {
+      "identity" : "xctest-dynamic-overlay",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/pointfreeco/xctest-dynamic-overlay",
+      "state" : {
+        "revision" : "6f30bdba373bbd7fbfe241dddd732651f2fbd1e2",
+        "version" : "1.1.2"
+      }
+    },
+    {
+      "identity" : "yyjson",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ibireme/yyjson",
+      "state" : {
+        "revision" : "8b4a38dc994a110abaec8a400615567bd996105f",
+        "version" : "0.12.0"
+      }
+    }
+  ],
+  "version" : 3
+}

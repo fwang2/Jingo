@@ -1,0 +1,16 @@
+schemes:
+  - Jingo
+targets:
+  - JingoKit
+  - Jingo
+  - ShareExtension
+  - Common
+  - AudioProcessing
+verbose: false
+workspace: Jingo.xcworkspace
+report_exclude:
+  - App/Derived/*
+  - Tuist/*
+  - build/*
+  - Sources/AppKit/Clients/Secrets.swift
+  - Derived/*
