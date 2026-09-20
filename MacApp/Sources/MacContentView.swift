@@ -921,123 +921,152 @@ struct MacContentView: View {
         Divider()
           .padding(.leading, 16)
 
-        settingsRow("Provider", value: "On-device")
+        HStack(spacing: 16) {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Summary model")
+              .font(.body.weight(.medium))
 
-        Divider()
-          .padding(.leading, 16)
-
-        settingsRow("Summary model", value: "Qwen3 4B · 4-bit")
-
-        Divider()
-          .padding(.leading, 16)
-
-        settingsRow("Summary status", value: controller.summaryModelStatusText)
-
-        if controller.isPreparingSummaryModel {
-          summaryModelProgress
-            .padding(16)
-        } else if !controller.isSummaryModelReady {
-          Divider()
-            .padding(.leading, 16)
-
-          Button("Download Summary Model", systemImage: "arrow.down.circle") {
-            controller.prepareSummaryModel()
+            HStack(spacing: 0) {
+              Text("On-device")
+              Text(" · ")
+              Text("Qwen3 4B · 4-bit")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
           }
-          .padding(16)
-          .accessibilityIdentifier("settings.prepareSummaryModel")
-        }
 
-        Divider()
-          .padding(.leading, 16)
+          Spacer()
 
-        VStack(alignment: .leading, spacing: 8) {
-          HStack {
-            VStack(alignment: .leading, spacing: 3) {
-              Text("Custom summary instructions")
-                .font(.body.weight(.medium))
-              Text("Optional Markdown instructions for tone, focus, terminology, or formatting.")
-                .font(.caption)
+          if controller.isPreparingSummaryModel {
+            summaryModelProgress
+              .frame(width: 190)
+          } else if controller.isSummaryModelReady {
+            Text(controller.summaryModelStatusText)
+              .foregroundStyle(.secondary)
+          } else {
+            HStack(spacing: 12) {
+              Text(controller.summaryModelStatusText)
                 .foregroundStyle(.secondary)
-            }
 
-            Spacer()
-
-            if controller.customSummaryInstructions != MacMeetingSummarizer.defaultCustomInstructions {
-              Button("Restore Default") {
-                controller.customSummaryInstructions = MacMeetingSummarizer.defaultCustomInstructions
+              Button("Download Model", systemImage: "arrow.down.circle") {
+                controller.prepareSummaryModel()
               }
-              .buttonStyle(.borderless)
-            }
-
-            if !controller.customSummaryInstructions.isEmpty {
-              Button("Clear") {
-                controller.customSummaryInstructions = ""
-              }
-              .buttonStyle(.borderless)
+              .accessibilityIdentifier("settings.prepareSummaryModel")
             }
           }
+        }
+        .padding(16)
 
-          HStack(spacing: 0) {
-            summaryInstructionsTabButton("Edit", tab: .edit)
-            summaryInstructionsTabButton("Preview", tab: .preview)
-          }
-          .padding(3)
-          .background(
-            Color(nsColor: .controlBackgroundColor),
-            in: RoundedRectangle(cornerRadius: 8)
-          )
-          .accessibilityElement(children: .contain)
-          .accessibilityIdentifier("settings.summaryInstructionsTabs")
+        Divider()
+          .padding(.leading, 16)
 
-          switch summaryInstructionsTab {
-          case .edit:
-            TextEditor(text: $controller.customSummaryInstructions)
-              .font(.body)
-              .frame(minHeight: 280)
-              .padding(7)
-              .background(
-                Color(nsColor: .controlBackgroundColor),
-                in: RoundedRectangle(cornerRadius: 8)
-              )
-              .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                  .strokeBorder(.separator.opacity(0.55))
-              }
-              .accessibilityLabel("Custom summary instructions")
-              .accessibilityIdentifier("settings.summaryInstructions")
+        summaryInstructionsSettings
+          .padding(16)
+      }
+    }
+  }
 
-          case .preview:
-            VStack(alignment: .leading, spacing: 8) {
-              if controller.customSummaryInstructions
-                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("Your formatted instructions will appear here.")
-                  .font(.caption)
-                  .foregroundStyle(.tertiary)
-              } else {
-                MarkdownText(controller.customSummaryInstructions)
-                  .textSelection(.enabled)
-              }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, minHeight: 280, alignment: .topLeading)
-            .background(
-              Color(nsColor: .textBackgroundColor),
-              in: RoundedRectangle(cornerRadius: 8)
-            )
-            .overlay {
-              RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(.separator.opacity(0.4))
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("settings.summaryInstructionsPreview")
-          }
-
-          Text("Jingo still enforces factual grounding, the structured result, and meeting-length limits.")
+  private var summaryInstructionsSettings: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .top, spacing: 16) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("Summary instructions")
+            .font(.body.weight(.medium))
+          Text("Guide tone, focus, terminology, and formatting.")
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .padding(16)
+
+        Spacer()
+
+        if controller.customSummaryInstructions != MacMeetingSummarizer.defaultCustomInstructions {
+          Button("Restore Default") {
+            controller.customSummaryInstructions = MacMeetingSummarizer.defaultCustomInstructions
+          }
+          .buttonStyle(.borderless)
+        }
+
+        if !controller.customSummaryInstructions.isEmpty {
+          Button("Clear") {
+            controller.customSummaryInstructions = ""
+          }
+          .buttonStyle(.borderless)
+        }
       }
+
+      HStack {
+        HStack(spacing: 0) {
+          summaryInstructionsTabButton("Edit", tab: .edit)
+          summaryInstructionsTabButton("Preview", tab: .preview)
+        }
+        .padding(3)
+        .background(
+          Color(nsColor: .controlBackgroundColor),
+          in: RoundedRectangle(cornerRadius: 8)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.summaryInstructionsTabs")
+
+        Spacer()
+
+        Text("Saved automatically")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+
+      switch summaryInstructionsTab {
+      case .edit:
+        TextEditor(text: $controller.customSummaryInstructions)
+          .font(.body)
+          .frame(height: 240)
+          .padding(7)
+          .background(
+            Color(nsColor: .textBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 10)
+          )
+          .overlay {
+            RoundedRectangle(cornerRadius: 10)
+              .strokeBorder(.separator.opacity(0.55))
+          }
+          .accessibilityLabel("Custom summary instructions")
+          .accessibilityIdentifier("settings.summaryInstructions")
+
+      case .preview:
+        ScrollView {
+          VStack(alignment: .leading, spacing: 8) {
+            if controller.customSummaryInstructions
+              .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+              Text("Your formatted instructions will appear here.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            } else {
+              MarkdownText(controller.customSummaryInstructions)
+                .textSelection(.enabled)
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .topLeading)
+          .padding(16)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 240)
+        .background(
+          Color(nsColor: .textBackgroundColor),
+          in: RoundedRectangle(cornerRadius: 10)
+        )
+        .overlay {
+          RoundedRectangle(cornerRadius: 10)
+            .strokeBorder(.separator.opacity(0.55))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.summaryInstructionsPreview")
+      }
+
+      Label(
+        "Factual grounding, the structured result, and meeting-length limits are always enforced.",
+        systemImage: "shield.checkered"
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     }
   }
 
@@ -1051,9 +1080,9 @@ struct MacContentView: View {
     .buttonStyle(.plain)
     .font(.caption.weight(.semibold))
     .foregroundStyle(summaryInstructionsTab == tab ? .primary : .secondary)
-    .frame(minWidth: 88)
-    .padding(.horizontal, 12)
-    .padding(.vertical, 7)
+    .frame(minWidth: 72)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
     .background(
       summaryInstructionsTab == tab
         ? Color(nsColor: .selectedControlColor).opacity(0.18)
