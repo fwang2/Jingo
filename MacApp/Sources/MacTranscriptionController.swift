@@ -1377,7 +1377,9 @@ final class MacTranscriptionController: ObservableObject {
           sampleCount: 2
         ),
       ]
-      try? recordingStore.installUITestSpeakerSample(profileID: profileID)
+      #if DEBUG
+        try? recordingStore.installUITestSpeakerSample(profileID: profileID)
+      #endif
 
     default:
       break
