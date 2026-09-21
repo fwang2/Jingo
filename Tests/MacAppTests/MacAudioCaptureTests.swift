@@ -57,4 +57,60 @@ final class MacAudioCaptureTests: XCTestCase {
     )
     // swiftlint:enable xctassertnodifference_preferred
   }
+
+  func testSpeechPhraseWaitsForConfiguredSilence() {
+    var segmenter = MacSpeechPhraseSegmenter(configuration: .init(
+      sampleRate: 100,
+      speechThreshold: 0.5,
+      minimumSpeechDuration: 0.2,
+      silenceDuration: 0.3,
+      speechPadding: 0.1,
+      preRollDuration: 0.1,
+      maximumPhraseDuration: 10
+    ))
+
+    XCTAssertNil(segmenter.consume(samples: Array(repeating: 0, count: 10), speechProbability: 0))
+    XCTAssertNil(segmenter.consume(samples: Array(repeating: 1, count: 20), speechProbability: 0.9))
+    XCTAssertNil(segmenter.consume(samples: Array(repeating: 0, count: 20), speechProbability: 0.1))
+    let phrase = segmenter.consume(samples: Array(repeating: 0, count: 10), speechProbability: 0.1)
+
+    // swiftlint:disable xctassertnodifference_preferred
+    XCTAssertEqual(phrase?.startSample, 0)
+    XCTAssertEqual(phrase?.endSample, 40)
+    XCTAssertEqual(phrase?.samples.count, 40)
+    // swiftlint:enable xctassertnodifference_preferred
+  }
+
+  func testSpeechPhraseDropsBurstsShorterThanMinimumSpeechDuration() {
+    var segmenter = MacSpeechPhraseSegmenter(configuration: .init(
+      sampleRate: 100,
+      speechThreshold: 0.5,
+      minimumSpeechDuration: 0.3,
+      silenceDuration: 0.2,
+      speechPadding: 0,
+      preRollDuration: 0.1,
+      maximumPhraseDuration: 10
+    ))
+
+    XCTAssertNil(segmenter.consume(samples: Array(repeating: 1, count: 20), speechProbability: 0.9))
+    XCTAssertNil(segmenter.consume(samples: Array(repeating: 0, count: 20), speechProbability: 0.1))
+  }
+
+  func testSpeechPhraseFlushesAtMaximumDuration() {
+    var segmenter = MacSpeechPhraseSegmenter(configuration: .init(
+      sampleRate: 100,
+      speechThreshold: 0.5,
+      minimumSpeechDuration: 0.1,
+      silenceDuration: 1,
+      speechPadding: 0,
+      preRollDuration: 0.1,
+      maximumPhraseDuration: 0.3
+    ))
+
+    XCTAssertNil(segmenter.consume(samples: Array(repeating: 1, count: 20), speechProbability: 0.9))
+    let phrase = segmenter.consume(samples: Array(repeating: 1, count: 10), speechProbability: 0.9)
+
+    // swiftlint:disable:next xctassertnodifference_preferred
+    XCTAssertEqual(phrase?.samples.count, 30)
+  }
 }

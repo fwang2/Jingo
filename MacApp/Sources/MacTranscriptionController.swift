@@ -1,12 +1,14 @@
 import AppKit
 import AVFoundation
 import Combine
+import FluidAudio
 import Foundation
 import HuggingFace
 import MeetingSummaryCore
 import MLX
 import MLXAudioCore
 import MLXAudioSTT
+import MLXAudioVAD
 
 // MARK: - MacSection
 
@@ -16,6 +18,57 @@ enum MacSection: Hashable {
   case speakers
   case account
   case settings
+}
+
+// MARK: - MacTranscriptionModel
+
+enum MacTranscriptionModel: String, CaseIterable, Identifiable, Sendable {
+  case parakeetUnifiedEN
+  case qwen3ASR
+  case whisperLargeV3Turbo
+
+  var id: Self {
+    self
+  }
+
+  var title: String {
+    switch self {
+    case .parakeetUnifiedEN:
+      "Parakeet Unified EN · 320 ms"
+
+    case .qwen3ASR:
+      "Qwen3-ASR 1.7B · 4-bit"
+
+    case .whisperLargeV3Turbo:
+      "Whisper Large-v3-Turbo"
+    }
+  }
+
+  var behaviorDescription: String {
+    switch self {
+    case .parakeetUnifiedEN:
+      "Optimized for low-latency English with punctuation and capitalization."
+
+    case .qwen3ASR:
+      "Shows provisional text while you speak."
+
+    case .whisperLargeV3Turbo:
+      "Uses Silero VAD and adds stable text after each phrase."
+    }
+  }
+
+  var modelID: String {
+    switch self {
+    case .parakeetUnifiedEN:
+      "FluidInference/parakeet-unified-en-0.6b-coreml"
+
+    case .qwen3ASR:
+      "mlx-community/Qwen3-ASR-1.7B-4bit"
+
+    case .whisperLargeV3Turbo:
+      "mlx-community/whisper-large-v3-turbo"
+    }
+  }
 }
 
 // MARK: - MacRecording
@@ -367,11 +420,26 @@ final class MacTranscriptionController: ObservableObject {
   @Published var isLoadingModel = false
   @Published var isModelReady = false
   @Published var isRecording = false
+  @Published private(set) var isFinalizingRecording = false
   @Published private(set) var recordingElapsedTime: TimeInterval = 0
   @Published private(set) var recentWaveformLevels: [Float] = []
   @Published var audioSourceMode: MacAudioSourceMode {
     didSet {
       UserDefaults.standard.set(audioSourceMode.rawValue, forKey: Self.audioSourceModeDefaultsKey)
+    }
+  }
+
+  @Published var transcriptionModel: MacTranscriptionModel {
+    didSet {
+      guard transcriptionModel != oldValue else { return }
+      UserDefaults.standard.set(
+        transcriptionModel.rawValue,
+        forKey: Self.transcriptionModelDefaultsKey
+      )
+      isModelReady = false
+      downloadProgress = 0
+      statusText = "Transcription model changed"
+      prepareModelIfNeeded()
     }
   }
 
@@ -381,6 +449,23 @@ final class MacTranscriptionController: ObservableObject {
       recordSyncSettingsChange()
       if isLiveTranscriptionEnabled {
         prepareModelIfNeeded()
+      }
+    }
+  }
+
+  @Published var isHandsFreeModeEnabled: Bool {
+    didSet {
+      UserDefaults.standard.set(
+        isHandsFreeModeEnabled,
+        forKey: Self.handsFreeModeDefaultsKey
+      )
+      if isHandsFreeModeEnabled {
+        if !isLiveTranscriptionEnabled {
+          isLiveTranscriptionEnabled = true
+        }
+        startHandsFreeIfNeeded()
+      } else if isRecording {
+        toggleRecording()
       }
     }
   }
@@ -456,6 +541,8 @@ final class MacTranscriptionController: ObservableObject {
 
   private static let liveTranscriptionDefaultsKey = "mac.liveTranscriptionEnabled"
   private static let audioSourceModeDefaultsKey = "mac.audioSourceMode"
+  private static let transcriptionModelDefaultsKey = "mac.transcriptionModel"
+  private static let handsFreeModeDefaultsKey = "mac.handsFreeModeEnabled"
   private static let transcriptFontSizeDefaultsKey = "mac.transcriptFontSize"
   private static let automaticSummariesDefaultsKey = "mac.automaticSummariesEnabled"
   private static let automaticRecordingBackupDefaultsKey = "mac.automaticRecordingBackupEnabled"
@@ -524,8 +611,15 @@ final class MacTranscriptionController: ObservableObject {
       ? UserDefaults.standard.string(forKey: Self.audioSourceModeDefaultsKey)
         .flatMap(MacAudioSourceMode.init(rawValue:)) ?? .automatic
       : .automatic
+    transcriptionModel = uiTestScenario == nil
+      ? UserDefaults.standard.string(forKey: Self.transcriptionModelDefaultsKey)
+        .flatMap(MacTranscriptionModel.init(rawValue:)) ?? .parakeetUnifiedEN
+      : .qwen3ASR
     isLiveTranscriptionEnabled = uiTestScenario == nil
       ? UserDefaults.standard.object(forKey: Self.liveTranscriptionDefaultsKey) as? Bool ?? true
+      : false
+    isHandsFreeModeEnabled = uiTestScenario == nil
+      ? UserDefaults.standard.object(forKey: Self.handsFreeModeDefaultsKey) as? Bool ?? false
       : false
     automaticSummariesEnabled = uiTestScenario == nil
       ? UserDefaults.standard.object(forKey: Self.automaticSummariesDefaultsKey) as? Bool ?? true
@@ -1321,6 +1415,19 @@ final class MacTranscriptionController: ObservableObject {
     prepareModel()
   }
 
+  func startHandsFreeIfNeeded() {
+    guard isHandsFreeModeEnabled, !isRecording, !isLoadingModel else { return }
+    guard isLiveTranscriptionEnabled else {
+      isLiveTranscriptionEnabled = true
+      return
+    }
+    guard isModelReady else {
+      prepareModelIfNeeded()
+      return
+    }
+    toggleRecording()
+  }
+
   func prepareModel() {
     guard !isLoadingModel, !isModelReady else { return }
 
@@ -1328,6 +1435,7 @@ final class MacTranscriptionController: ObservableObject {
       guard let self else { return }
       do {
         try await loadModel()
+        startHandsFreeIfNeeded()
       } catch {
         errorMessage = error.localizedDescription
         statusText = "Model preparation failed"
@@ -1344,11 +1452,18 @@ final class MacTranscriptionController: ObservableObject {
 
   func audioButtonTapped() {
     selectedSection = .home
+    guard !isFinalizingRecording else { return }
+    if isRecording, isHandsFreeModeEnabled {
+      isHandsFreeModeEnabled = false
+      return
+    }
     toggleRecording()
   }
 
   func toggleRecording() {
+    guard !isFinalizingRecording else { return }
     if isRecording {
+      isFinalizingRecording = true
       statusText = "Finalizing recording…"
       operationTask = Task { [weak self] in
         guard let self else { return }
@@ -1424,6 +1539,7 @@ final class MacTranscriptionController: ObservableObject {
             speakerNames = result.speakerNames
             let completedRecordingID = finishActiveRecording()
             isRecording = false
+            isFinalizingRecording = false
             resetRecordingVisualization()
             if let refinementError = result.refinementError {
               errorMessage = "The final speaker refinement failed. The latest checkpoint was kept. \(refinementError)"
@@ -1439,11 +1555,13 @@ final class MacTranscriptionController: ObservableObject {
             errorMessage = message
             _ = finishActiveRecording()
             isRecording = false
+            isFinalizingRecording = false
             resetRecordingVisualization()
             statusText = "Recording failed"
           }
         }
         recordingStartedAt = Date()
+        isFinalizingRecording = false
         isRecording = true
         let recordingStatus = isLiveTranscriptionEnabled
           ? "Listening and transcribing"
@@ -1460,6 +1578,7 @@ final class MacTranscriptionController: ObservableObject {
         displayedRecordingID = nil
         recordingStartedAt = nil
         isRecording = false
+        isFinalizingRecording = false
         resetRecordingVisualization()
         statusText = "Recording failed"
       }
@@ -1958,7 +2077,7 @@ final class MacTranscriptionController: ObservableObject {
     statusText = "Preparing transcription model…"
     defer { isLoadingModel = false }
 
-    try await engine.loadModel { [weak self] progress in
+    try await engine.loadModel(transcriptionModel) { [weak self] progress in
       self?.downloadProgress = progress
       self?.statusText = progress < 1
         ? "Downloading model · \(Int(progress * 100))%"
@@ -2211,18 +2330,35 @@ private final class MacMixedAudioConsumer: @unchecked Sendable {
   }
 }
 
+// MARK: - MacWhisperModelBundle
+
+private final class MacWhisperModelBundle: @unchecked Sendable {
+  let transcriptionModel: WhisperModel
+  let vadModel: SileroVAD
+
+  init(transcriptionModel: WhisperModel, vadModel: SileroVAD) {
+    self.transcriptionModel = transcriptionModel
+    self.vadModel = vadModel
+  }
+}
+
 // MARK: - MacTranscriptionEngine
 
 private actor MacTranscriptionEngine {
-  static let modelID = "mlx-community/Qwen3-ASR-1.7B-4bit"
+  static let sileroModelID = "mlx-community/silero-vad"
   static let sampleRate = 16000.0
   static let modelRootURL = URL.applicationSupportDirectory
     .appendingPathComponent("WhisperBoardMac/Models", isDirectory: true)
 
   private let executionPolicy = TranscriptionExecutionPolicy.automatic
   private lazy var speakerPipeline = MacSpeakerPipeline(modelRootURL: Self.modelRootURL)
-  private var model: Qwen3ASRModel?
+  private var loadedTranscriptionModel: MacTranscriptionModel?
+  private var parakeetModel: StreamingUnifiedAsrManager?
+  private var qwenModel: Qwen3ASRModel?
+  private var whisperModels: MacWhisperModelBundle?
   private var session: StreamingInferenceSession?
+  private var isParakeetSessionActive = false
+  private var isWhisperSessionActive = false
   private var audioEngine: AVAudioEngine?
   private var systemAudioCapture: MacSystemAudioCapture?
   private var audioMixer: MacRealtimeAudioMixer?
@@ -2238,18 +2374,29 @@ private actor MacTranscriptionEngine {
   private var eventHandler: (@MainActor @Sendable (MacTranscriptionEvent) -> Void)?
 
   func loadModel(
+    _ requestedModel: MacTranscriptionModel,
     progressHandler: @escaping @MainActor @Sendable (Double) -> Void
   ) async throws {
-    if model != nil {
+    if loadedTranscriptionModel == requestedModel,
+       parakeetModel != nil || qwenModel != nil || whisperModels != nil {
       if executionPolicy.keepsAuxiliaryModelsResident {
         try await speakerPipeline.prepareModels { _ in }
       }
       await progressHandler(1)
       return
     }
-    guard let repository = Repo.ID(rawValue: Self.modelID) else {
+    guard let repository = Repo.ID(rawValue: requestedModel.modelID) else {
       throw MacTranscriptionError.invalidModelIdentifier
     }
+
+    if let parakeetModel {
+      await parakeetModel.cleanup()
+    }
+    parakeetModel = nil
+    qwenModel = nil
+    whisperModels = nil
+    loadedTranscriptionModel = nil
+    Memory.clearCache()
 
     let speakerPreparationTask: Task<Void, Error>? = if executionPolicy.keepsAuxiliaryModelsResident {
       Task { try await speakerPipeline.prepareModels { _ in } }
@@ -2259,17 +2406,68 @@ private actor MacTranscriptionEngine {
 
     let cache = HubCache(cacheDirectory: Self.modelRootURL)
     let client = HubClient(cache: cache)
-    let modelDirectory = try await ModelUtils.resolveOrDownloadModel(
-      client: client,
-      cache: cache,
-      repoID: repository,
-      requiredExtension: "safetensors",
-      progressHandler: { progress in
-        progressHandler(progress.fractionCompleted)
+    switch requestedModel {
+    case .parakeetUnifiedEN:
+      // FluidAudio's lowest-latency Unified tier: 160 ms of audio plus
+      // 160 ms of right context, while retaining punctuation and capitalization.
+      let manager = StreamingUnifiedAsrManager(
+        config: UnifiedConfig(leftFrames: 70, chunkFrames: 2, rightFrames: 2),
+        encoderPrecision: .int8
+      )
+      try await manager.loadModels(progressHandler: { progress in
+        Task { @MainActor in
+          progressHandler(progress.fractionCompleted)
+        }
+      })
+      parakeetModel = manager
+
+    case .qwen3ASR:
+      let modelDirectory = try await ModelUtils.resolveOrDownloadModel(
+        client: client,
+        cache: cache,
+        repoID: repository,
+        requiredExtension: "safetensors",
+        progressHandler: { progress in
+          progressHandler(progress.fractionCompleted)
+        }
+      )
+      qwenModel = try await Qwen3ASRModel.fromModelDirectory(modelDirectory)
+
+    case .whisperLargeV3Turbo:
+      let modelDirectory = try await ModelUtils.resolveOrDownloadModel(
+        client: client,
+        cache: cache,
+        repoID: repository,
+        requiredExtension: "safetensors",
+        additionalMatchingPatterns: ["*.json", "*.txt", "*.model", "merges.txt", "vocab.json"],
+        progressHandler: { progress in
+          progressHandler(progress.fractionCompleted * 0.9)
+        }
+      )
+      let transcriptionModel = try await WhisperModel.fromDirectory(
+        modelDirectory,
+        cache: cache
+      )
+      guard let vadRepository = Repo.ID(rawValue: Self.sileroModelID) else {
+        throw MacTranscriptionError.invalidModelIdentifier
       }
-    )
-    model = try await Qwen3ASRModel.fromModelDirectory(modelDirectory)
+      let vadDirectory = try await ModelUtils.resolveOrDownloadModel(
+        client: client,
+        cache: cache,
+        repoID: vadRepository,
+        requiredExtension: "safetensors",
+        progressHandler: { progress in
+          progressHandler(0.9 + progress.fractionCompleted * 0.1)
+        }
+      )
+      whisperModels = try MacWhisperModelBundle(
+        transcriptionModel: transcriptionModel,
+        vadModel: SileroVAD.fromModelDirectory(vadDirectory)
+      )
+    }
+
     try await speakerPreparationTask?.value
+    loadedTranscriptionModel = requestedModel
     await progressHandler(1)
   }
 
@@ -2285,7 +2483,7 @@ private actor MacTranscriptionEngine {
     speakerProfiles: [SpeakerProfile],
     eventHandler: @escaping @MainActor @Sendable (MacTranscriptionEvent) -> Void
   ) async throws {
-    if liveTranscriptionEnabled, model == nil {
+    if liveTranscriptionEnabled, loadedTranscriptionModel == nil {
       throw MacTranscriptionError.modelNotLoaded
     }
     guard audioEngine == nil, systemAudioCapture == nil, audioMixer == nil else { return }
@@ -2294,6 +2492,8 @@ private actor MacTranscriptionEngine {
     streamingTranscriptState.reset()
     confirmedTranscriptTimeline.reset()
     checkpointState.reset()
+    isParakeetSessionActive = false
+    isWhisperSessionActive = false
 
     guard let outputFormat = AVAudioFormat(
       commonFormat: .pcmFormatFloat32,
@@ -2305,14 +2505,23 @@ private actor MacTranscriptionEngine {
     }
     let audioFile = try AVAudioFile(forWriting: recordingURL, settings: outputFormat.settings)
 
-    let session: StreamingInferenceSession? = if let model, liveTranscriptionEnabled {
+    let parakeetSession: StreamingUnifiedAsrManager?
+    if let parakeetModel, liveTranscriptionEnabled {
+      try await parakeetModel.reset()
+      parakeetSession = parakeetModel
+    } else {
+      parakeetSession = nil
+    }
+    isParakeetSessionActive = parakeetSession != nil
+
+    let session: StreamingInferenceSession? = if let qwenModel, liveTranscriptionEnabled {
       StreamingInferenceSession(
-        model: model,
+        model: qwenModel,
         config: StreamingConfig(
           decodeIntervalSeconds: 2,
           boundaryDecodeIntervalSeconds: 0.5,
           delayPreset: .subtitle,
-          language: nil,
+          language: "English",
           maxTokensPerPass: 1024,
           maxDecodeWindows: 2,
           finalizeCompletedWindows: true
@@ -2322,7 +2531,22 @@ private actor MacTranscriptionEngine {
       nil
     }
 
-    if let session {
+    let transcriptionFailureHandler: @Sendable (String) -> Void = { [weak self] message in
+      Task {
+        await self?.handleCaptureFailure(message)
+      }
+    }
+
+    if let parakeetSession {
+      feedTask = Self.makeParakeetTranscriptionTask(
+        audioBuffer: streamingAudioBuffer,
+        manager: parakeetSession,
+        transcriptState: streamingTranscriptState,
+        transcriptTimeline: confirmedTranscriptTimeline,
+        eventHandler: eventHandler,
+        failureHandler: transcriptionFailureHandler
+      )
+    } else if let session {
       let transcriptState = streamingTranscriptState
       let transcriptTimeline = confirmedTranscriptTimeline
       let audioBuffer = streamingAudioBuffer
@@ -2370,23 +2594,34 @@ private actor MacTranscriptionEngine {
           try? await Task.sleep(for: .milliseconds(100))
         }
       }
+    } else if let whisperModels, liveTranscriptionEnabled {
+      isWhisperSessionActive = true
+      let phraseStream = AsyncStream<MacSpeechPhrase>.makeStream()
+      eventTask = Self.makeWhisperTranscriptionTask(
+        phraseStream: phraseStream.stream,
+        models: whisperModels,
+        transcriptState: streamingTranscriptState,
+        transcriptTimeline: confirmedTranscriptTimeline,
+        eventHandler: eventHandler
+      )
+      feedTask = Self.makeWhisperVADTask(
+        audioBuffer: streamingAudioBuffer,
+        models: whisperModels,
+        continuation: phraseStream.continuation,
+        failureHandler: transcriptionFailureHandler
+      )
     }
 
     let audioBuffer = streamingAudioBuffer
     let recordingMeter = MacRecordingMeter()
-    let captureFailureHandler: @Sendable (String) -> Void = { [weak self] message in
-      Task {
-        await self?.handleCaptureFailure(message)
-      }
-    }
     let consumer = MacMixedAudioConsumer(
       audioFile: audioFile,
       format: outputFormat,
       recordingMeter: recordingMeter,
       streamingAudioBuffer: audioBuffer,
-      keepsTranscriptionAudio: session != nil,
+      keepsTranscriptionAudio: isParakeetSessionActive || session != nil || isWhisperSessionActive,
       eventHandler: eventHandler,
-      failureHandler: captureFailureHandler
+      failureHandler: transcriptionFailureHandler
     )
     let mixer = MacRealtimeAudioMixer()
 
@@ -2398,7 +2633,7 @@ private actor MacTranscriptionEngine {
           chunkHandler: { chunk in
             mixer.append(chunk)
           },
-          failureHandler: captureFailureHandler
+          failureHandler: transcriptionFailureHandler
         )
       }
 
@@ -2427,7 +2662,7 @@ private actor MacTranscriptionEngine {
               startUptime: ProcessInfo.processInfo.systemUptime - duration
             ))
           } catch {
-            captureFailureHandler(error.localizedDescription)
+            transcriptionFailureHandler(error.localizedDescription)
           }
         }
         engine.prepare()
@@ -2451,6 +2686,8 @@ private actor MacTranscriptionEngine {
       _ = await eventTask?.value
       eventTask = nil
       self.eventHandler = nil
+      isParakeetSessionActive = false
+      isWhisperSessionActive = false
       confirmedTranscriptTimeline.reset()
       checkpointState.reset()
       throw error
@@ -2464,7 +2701,7 @@ private actor MacTranscriptionEngine {
     audioMixer = mixer
     mixedAudioConsumer = consumer
     self.recordingURL = recordingURL
-    if session != nil {
+    if isParakeetSessionActive || session != nil || isWhisperSessionActive {
       checkpointTask = Self.makeCheckpointTask(
         audioBuffer: streamingAudioBuffer,
         transcriptTimeline: confirmedTranscriptTimeline,
@@ -2491,7 +2728,7 @@ private actor MacTranscriptionEngine {
     mixedAudioConsumer = nil
     recordingURL = nil
 
-    if let session {
+    if isParakeetSessionActive || session != nil || isWhisperSessionActive {
       feedTask?.cancel()
       _ = await feedTask?.value
       feedTask = nil
@@ -2500,11 +2737,13 @@ private actor MacTranscriptionEngine {
       _ = await checkpointTask?.value
       checkpointTask = nil
 
-      let finalPendingSamples = streamingAudioBuffer.drain()
-      if !finalPendingSamples.isEmpty {
-        session.feedAudio(samples: finalPendingSamples)
+      if let session {
+        let finalPendingSamples = streamingAudioBuffer.drain()
+        if !finalPendingSamples.isEmpty {
+          session.feedAudio(samples: finalPendingSamples)
+        }
+        session.stop()
       }
-      session.stop()
 
       _ = await eventTask?.value
       eventTask = nil
@@ -2518,24 +2757,51 @@ private actor MacTranscriptionEngine {
       var speakerNames = checkpoint?.speakerNames ?? [:]
       var refinementError: String?
       let allSamples = streamingAudioBuffer.snapshot()
-      if let model, allSamples.count >= Int(Self.sampleRate) {
-        let output = model.generate(
+      let output: STTOutput? = if allSamples.count >= Int(Self.sampleRate),
+                                  let qwenModel {
+        qwenModel.generate(
           audio: MLXArray(allSamples),
           generationParameters: STTGenerateParameters(
             maxTokens: 8192,
-            language: nil,
+            language: "English",
             chunkDuration: 30,
             minChunkDuration: 1
           )
         )
+      } else if allSamples.count >= Int(Self.sampleRate),
+                let whisperModels {
+        whisperModels.transcriptionModel.generate(
+          audio: MLXArray(allSamples),
+          generationParameters: Self.englishWhisperGenerationParameters(
+            for: whisperModels.transcriptionModel
+          )
+        )
+      } else {
+        nil
+      }
+      var chunks: [MacTranscriptionChunk] = []
+      if let output {
         let batchText = QwenStreamingTextCleaner.clean(output.text)
         if !batchText.isEmpty {
           finalText = batchText
         }
-        let chunks = Self.makeTranscriptionChunks(
+        chunks = Self.makeTranscriptionChunks(
           from: output,
           fallbackDuration: Double(allSamples.count) / Self.sampleRate
         )
+      } else if loadedTranscriptionModel == .parakeetUnifiedEN,
+                !finalText.isEmpty,
+                allSamples.count >= Int(Self.sampleRate) {
+        chunks = [MacTranscriptionChunk(
+          text: finalText,
+          startTimeMS: 0,
+          endTimeMS: Int64(
+            (Double(allSamples.count) / Self.sampleRate * 1000).rounded()
+          ),
+          language: "English"
+        )]
+      }
+      if !chunks.isEmpty {
         do {
           guard let completedRecordingURL else {
             throw MacTranscriptionError.missingRecording
@@ -2589,6 +2855,8 @@ private actor MacTranscriptionEngine {
     confirmedTranscriptTimeline.reset()
     checkpointState.reset()
     session = nil
+    isParakeetSessionActive = false
+    isWhisperSessionActive = false
     eventHandler = nil
   }
 
@@ -2620,9 +2888,186 @@ private actor MacTranscriptionEngine {
     _ = await eventTask?.value
     eventTask = nil
     session = nil
+    isParakeetSessionActive = false
+    isWhisperSessionActive = false
     confirmedTranscriptTimeline.reset()
     checkpointState.reset()
     await eventHandler(.failure(message))
+  }
+
+  private nonisolated static func makeParakeetTranscriptionTask(
+    audioBuffer: MacStreamingAudioBuffer,
+    manager: StreamingUnifiedAsrManager,
+    transcriptState: MacStreamingTranscriptState,
+    transcriptTimeline: MacConfirmedTranscriptTimeline,
+    eventHandler: @escaping @MainActor @Sendable (MacTranscriptionEvent) -> Void,
+    failureHandler: @escaping @Sendable (String) -> Void
+  ) -> Task<Void, Never> {
+    Task.detached(priority: .userInitiated) {
+      do {
+        func process(_ samples: [Float], final: Bool) async throws -> String {
+          if !samples.isEmpty {
+            let buffer = try makeAudioBuffer(from: samples)
+            try await manager.appendAudio(buffer)
+          }
+          if final {
+            return try await manager.finish()
+          }
+          try await manager.processBufferedAudio()
+          return await manager.getPartialTranscript()
+        }
+
+        while !Task.isCancelled {
+          let samples = audioBuffer.drain()
+          if !samples.isEmpty {
+            let text = try await process(samples, final: false)
+              .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+              let displayText = transcriptState.updateConfirmed(text)
+              transcriptTimeline.update(
+                text: text,
+                audioEndTimeMS: max(
+                  audioBuffer.durationMS(sampleRate: sampleRate) - 320,
+                  0
+                )
+              )
+              await eventHandler(.text(displayText))
+            }
+          }
+          try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        let finalText = try await process(audioBuffer.drain(), final: true)
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        transcriptState.finish(finalText)
+        if !finalText.isEmpty {
+          transcriptTimeline.update(
+            text: finalText,
+            audioEndTimeMS: audioBuffer.durationMS(sampleRate: sampleRate)
+          )
+          await eventHandler(.text(finalText))
+        }
+      } catch {
+        failureHandler("Parakeet transcription failed: \(error.localizedDescription)")
+      }
+    }
+  }
+
+  private nonisolated static func makeWhisperVADTask(
+    audioBuffer: MacStreamingAudioBuffer,
+    models: MacWhisperModelBundle,
+    continuation: AsyncStream<MacSpeechPhrase>.Continuation,
+    failureHandler: @escaping @Sendable (String) -> Void
+  ) -> Task<Void, Never> {
+    Task.detached(priority: .userInitiated) {
+      let vadChunkSize = 512
+      var pendingSamples: [Float] = []
+      var segmenter = MacSpeechPhraseSegmenter()
+
+      do {
+        var vadState = try models.vadModel.initialState(sampleRate: Int(sampleRate))
+
+        func processAvailableSamples(flushRemainder: Bool) throws {
+          while pendingSamples.count >= vadChunkSize
+            || flushRemainder && !pendingSamples.isEmpty {
+            let sampleCount = min(vadChunkSize, pendingSamples.count)
+            let samples = Array(pendingSamples.prefix(sampleCount))
+            pendingSamples.removeFirst(sampleCount)
+            let vadSamples = sampleCount == vadChunkSize
+              ? samples
+              : samples + Array(repeating: 0, count: vadChunkSize - sampleCount)
+            let (probability, newState) = try models.vadModel.feed(
+              chunk: MLXArray(vadSamples),
+              state: vadState,
+              sampleRate: Int(sampleRate)
+            )
+            vadState = newState
+            eval(probability)
+            let speechProbability = probability.asArray(Float.self).first ?? 0
+            if let phrase = segmenter.consume(
+              samples: samples,
+              speechProbability: speechProbability
+            ) {
+              continuation.yield(phrase)
+            }
+          }
+        }
+
+        while !Task.isCancelled {
+          let samples = audioBuffer.drain()
+          if !samples.isEmpty {
+            pendingSamples.append(contentsOf: samples)
+            try processAvailableSamples(flushRemainder: false)
+          }
+          try? await Task.sleep(for: .milliseconds(32))
+        }
+
+        pendingSamples.append(contentsOf: audioBuffer.drain())
+        try processAvailableSamples(flushRemainder: true)
+        if let phrase = segmenter.flush() {
+          continuation.yield(phrase)
+        }
+        continuation.finish()
+      } catch {
+        continuation.finish()
+        failureHandler("Voice activity detection failed: \(error.localizedDescription)")
+      }
+    }
+  }
+
+  private nonisolated static func makeWhisperTranscriptionTask(
+    phraseStream: AsyncStream<MacSpeechPhrase>,
+    models: MacWhisperModelBundle,
+    transcriptState: MacStreamingTranscriptState,
+    transcriptTimeline: MacConfirmedTranscriptTimeline,
+    eventHandler: @escaping @MainActor @Sendable (MacTranscriptionEvent) -> Void
+  ) -> Task<Void, Never> {
+    Task.detached(priority: .userInitiated) {
+      var confirmedText = ""
+      for await phrase in phraseStream {
+        let output = models.transcriptionModel.generate(
+          audio: MLXArray(phrase.samples),
+          generationParameters: englishWhisperGenerationParameters(
+            for: models.transcriptionModel
+          )
+        )
+        let phraseText = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !phraseText.isEmpty else { continue }
+        confirmedText = [confirmedText, phraseText]
+          .filter { !$0.isEmpty }
+          .joined(separator: " ")
+        let displayText = transcriptState.updateConfirmed(confirmedText)
+        transcriptTimeline.update(
+          text: confirmedText,
+          audioEndTimeMS: Int64(
+            (Double(phrase.endSample) / sampleRate * 1000).rounded()
+          )
+        )
+        await eventHandler(.text(displayText))
+      }
+      transcriptState.finish(confirmedText)
+    }
+  }
+
+  private nonisolated static func englishWhisperGenerationParameters(
+    for model: WhisperModel
+  ) -> STTGenerateParameters {
+    let defaults = model.defaultGenerationParameters
+    return STTGenerateParameters(
+      maxTokens: defaults.maxTokens,
+      temperature: defaults.temperature,
+      topP: defaults.topP,
+      topK: defaults.topK,
+      verbose: defaults.verbose,
+      language: "en",
+      chunkDuration: defaults.chunkDuration,
+      minChunkDuration: defaults.minChunkDuration,
+      repetitionPenalty: defaults.repetitionPenalty,
+      repetitionContextSize: defaults.repetitionContextSize,
+      kvBits: defaults.kvBits,
+      kvGroupSize: defaults.kvGroupSize,
+      quantizedKVStart: defaults.quantizedKVStart
+    )
   }
 
   private nonisolated static func makeCheckpointTask(
@@ -2757,6 +3202,28 @@ private actor MacTranscriptionEngine {
       throw conversionError ?? MacTranscriptionError.audioConversionFailed
     }
     return outputBuffer
+  }
+
+  private nonisolated static func makeAudioBuffer(
+    from samples: [Float]
+  ) throws -> AVAudioPCMBuffer {
+    guard let format = AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: sampleRate,
+      channels: 1,
+      interleaved: false
+    ),
+      let buffer = AVAudioPCMBuffer(
+        pcmFormat: format,
+        frameCapacity: AVAudioFrameCount(samples.count)
+      ),
+      let channel = buffer.floatChannelData?.pointee
+    else {
+      throw MacTranscriptionError.audioConversionFailed
+    }
+    buffer.frameLength = AVAudioFrameCount(samples.count)
+    channel.update(from: samples, count: samples.count)
+    return buffer
   }
 
   private nonisolated static func samples(from buffer: AVAudioPCMBuffer) -> [Float] {

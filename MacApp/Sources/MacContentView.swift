@@ -36,6 +36,7 @@ struct MacContentView: View {
     .background(Color(nsColor: .windowBackgroundColor))
     .task {
       controller.prepareModelIfNeeded()
+      controller.startHandsFreeIfNeeded()
       controller.startSyncFolderSettings()
     }
     .onChange(of: scenePhase) { _, newValue in
@@ -818,6 +819,28 @@ struct MacContentView: View {
 
               HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
+                  Text("Hands-free listening")
+                    .font(.body.weight(.medium))
+                  Text("Start listening automatically while Jingo is running.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Toggle("", isOn: $controller.isHandsFreeModeEnabled)
+                  .labelsHidden()
+                  .toggleStyle(.switch)
+                  .disabled(controller.isRecording || controller.isLoadingModel)
+                  .accessibilityIdentifier("settings.handsFreeListening")
+              }
+              .padding(16)
+
+              Divider()
+                .padding(.leading, 16)
+
+              HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
                   Text("Live transcription")
                     .font(.body.weight(.medium))
                   Text("Show English and Chinese text while recording.")
@@ -867,7 +890,28 @@ struct MacContentView: View {
 
           settingsSection("MODEL") {
             VStack(spacing: 0) {
-              settingsRow("Default model", value: "Qwen3-ASR 1.7B · 4-bit")
+              HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                  Text("Default model")
+                    .font(.body.weight(.medium))
+                  Text(controller.transcriptionModel.behaviorDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Picker("Default model", selection: $controller.transcriptionModel) {
+                  ForEach(MacTranscriptionModel.allCases) { model in
+                    Text(model.title).tag(model)
+                  }
+                }
+                .labelsHidden()
+                .frame(width: 250)
+                .disabled(controller.isRecording || controller.isLoadingModel)
+                .accessibilityIdentifier("settings.transcriptionModel")
+              }
+              .padding(16)
 
               Divider()
                 .padding(.leading, 16)
@@ -1520,9 +1564,13 @@ struct MacContentView: View {
           Text(controller.statusText)
             .font(.subheadline.weight(.medium))
             .lineLimit(1)
-          Text(controller.isRecording ? "Recording locally" : "On-device · Private")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+          Text(
+            controller.isFinalizingRecording
+              ? "Finishing on device"
+              : controller.isRecording ? "Recording locally" : "On-device · Private"
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
         }
 
         if controller.isLoadingModel {
@@ -1534,7 +1582,11 @@ struct MacContentView: View {
 
       Spacer(minLength: 0)
 
-      if controller.isRecording {
+      if controller.isFinalizingRecording {
+        ProgressView()
+          .controlSize(.small)
+          .accessibilityLabel("Finalizing recording")
+      } else if controller.isRecording {
         HStack(spacing: 10) {
           Text(recordingElapsedTimeText)
             .font(.system(.body, design: .monospaced).weight(.semibold))
@@ -1559,16 +1611,18 @@ struct MacContentView: View {
         controller.audioButtonTapped()
       } label: {
         Label(
-          controller.isRecording ? "Stop" : "Record",
-          systemImage: controller.isRecording ? "stop.fill" : "mic.fill"
+          controller.isRecording && !controller.isFinalizingRecording ? "Stop" : "Record",
+          systemImage: controller.isRecording && !controller.isFinalizingRecording
+            ? "stop.fill"
+            : "mic.fill"
         )
         .font(.body.weight(.semibold))
         .frame(minWidth: 92)
       }
       .buttonStyle(.borderedProminent)
       .controlSize(.large)
-      .tint(controller.isRecording ? .red : .accentColor)
-      .disabled(controller.isLoadingModel)
+      .tint(controller.isRecording && !controller.isFinalizingRecording ? .red : .accentColor)
+      .disabled(controller.isLoadingModel || controller.isFinalizingRecording)
     }
     .padding(.horizontal, 20)
     .padding(.vertical, 14)

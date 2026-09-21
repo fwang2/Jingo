@@ -23,7 +23,9 @@
 
 ## What Jingo Does
 
-- Transcribes English, Chinese, and mixed-language speech locally with Qwen3-ASR.
+- Defaults to low-latency English transcription on Mac with NVIDIA Parakeet Unified EN.
+- Offers English-optimized Qwen3-ASR and Whisper Large-v3-Turbo alternatives on Mac, while the iPhone and iPad pipeline retains English, Chinese, and mixed-language transcription.
+- Supports optional hands-free listening on Mac so transcription can start automatically while Jingo is running.
 - Separates conversations into timestamped speaker turns with FluidAudio diarization.
 - Refines speaker attribution periodically during longer Mac recordings and performs a final full-recording pass when recording stops.
 - Learns known speakers from conversations or dedicated voice samples, then recognizes them in later recordings.
@@ -40,14 +42,16 @@ Jingo does not make the mobile app pay the memory cost of the desktop pipeline, 
 
 | Platform | Transcription | Speaker processing | Meeting summaries |
 | --- | --- | --- | --- |
-| Mac | Qwen3-ASR 1.7B, 4-bit | High-performance pipeline with concurrent processing, adaptive checkpoints, and final refinement | Qwen3 4B Instruct, 4-bit |
+| Mac | Parakeet Unified EN by default; selectable Qwen3-ASR 1.7B, 4-bit or Whisper Large-v3-Turbo | High-performance pipeline with concurrent processing, adaptive checkpoints, and final refinement | Qwen3 4B Instruct, 4-bit |
 | iPhone and iPad | Qwen3-ASR 0.6B, 4-bit | Resource-constrained sequential pipeline that unloads large auxiliary models between stages | Not currently available |
 
 Both paths use Qwen forced alignment to place words on the timeline and FluidAudio to perform speaker diarization.
 
+On Mac, Parakeet Unified EN is optimized for real-time English with punctuation and capitalization and is selected for new installations. The selectable Qwen and Whisper engines also constrain decoding to English for lower language-selection overhead and more stable English output. The iPhone and iPad Qwen pipeline remains multilingual.
+
 ## Privacy and Model Downloads
 
-Audio and transcripts stay on the device by default. If you configure **Backup & Restore** on Mac, Jingo also writes the selected settings and recording backups to the cloud-synced folder you choose. Jingo downloads its open models the first time they are prepared; after that, transcription and speaker processing run locally. The first run therefore requires internet access and takes longer than subsequent launches.
+Audio and transcripts stay on the device by default. If you configure **Backup & Restore** on Mac, Jingo also writes the selected settings and recording backups to the cloud-synced folder you choose. Jingo downloads the selected open transcription model and its supporting speaker models the first time they are prepared; after that, transcription and speaker processing run locally. Switching Mac transcription engines may require an additional one-time download.
 
 Known-speaker voice samples are stored locally. A sample needs at least six seconds of clear, single-speaker speech; recording 10–15 seconds is recommended.
 
@@ -99,7 +103,9 @@ Open the generated `Jingo.xcworkspace`, not the `.xcodeproj`.
 1. Select the `JingoMac` scheme.
 2. Choose **My Mac** as the destination.
 3. Press **Run**.
-4. In Jingo, prepare the model and grant microphone access when macOS asks.
+4. In Jingo, prepare the selected transcription model and grant microphone access when macOS asks.
+
+The Mac app defaults to Parakeet Unified EN. Open **Settings → Model** to select Qwen3-ASR or Whisper Large-v3-Turbo, or enable **Hands-free listening** to begin listening automatically while Jingo is running.
 
 ### Run on iPhone or iPad
 
@@ -157,6 +163,7 @@ Core projects and prior work:
 
 - [Whisperboard](https://github.com/Saik0s/Whisperboard)
 - [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)
+- [NVIDIA NeMo / Parakeet](https://github.com/NVIDIA-NeMo/NeMo)
 - [FluidAudio](https://github.com/FluidInference/FluidAudio)
 - [MLX Swift](https://github.com/ml-explore/mlx-swift)
 - [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture)

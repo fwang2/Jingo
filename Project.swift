@@ -194,6 +194,7 @@ let macTargets: [Target] = [
       .external(name: "MLX"),
       .external(name: "MLXAudioCore"),
       .external(name: "MLXAudioSTT"),
+      .external(name: "MLXAudioVAD"),
       .external(name: "MLXHuggingFace"),
       .external(name: "MLXLLM"),
       .external(name: "MLXLMCommon"),
@@ -222,6 +223,7 @@ let macTargets: [Target] = [
     sources: [
       "Tests/MacAppTests/**",
       "MacApp/Sources/MacAudioCapture.swift",
+      "MacApp/Sources/MacSpeechPhraseSegmenter.swift",
       "MacApp/Sources/MacICloudSettings.swift",
       "MacApp/Sources/MacMeetingDetector.swift",
       "MacApp/Sources/MacRecordingBackup.swift",
