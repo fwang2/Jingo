@@ -73,6 +73,7 @@ if !isAppStore {
 
 let macInfoPlist: [String: Plist.Value] = [
   "CFBundleDisplayName": "Jingo",
+  "CFBundleIconFile": "AppIcon",
   "CFBundleShortVersionString": Plist.Value(stringLiteral: version),
   "LSApplicationCategoryType": "public.app-category.productivity",
   "NSMicrophoneUsageDescription": "Jingo uses the microphone for offline live transcription.",
@@ -188,6 +189,7 @@ let macTargets: [Target] = [
       "Sources/AudioProcessing/QwenStreamingTextCleaner.swift",
       "Sources/SharedTranscription/**",
     ],
+    resources: ["MacApp/Resources/**"],
     dependencies: [
       .external(name: "FluidAudio"),
       .external(name: "HuggingFace"),
@@ -203,6 +205,7 @@ let macTargets: [Target] = [
     ],
     settings: .settings(
       base: [
+        "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
         "CODE_SIGN_IDENTITY": "-",
         "CODE_SIGNING_REQUIRED": "YES",
         "CODE_SIGN_STYLE": "Manual",
