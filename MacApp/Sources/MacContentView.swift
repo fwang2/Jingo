@@ -8,6 +8,7 @@ struct MacContentView: View {
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var controller = MacTranscriptionController()
   @State private var expandedRecordingIDs: Set<UUID> = []
+  @State private var recordingToTrash: MacRecording?
   @State private var profileToForget: SpeakerProfile?
   @State private var profileToRename: SpeakerProfile?
   @State private var speakerEnrollmentRequest: SpeakerEnrollmentRequest?
@@ -91,6 +92,21 @@ struct MacContentView: View {
       Button("Cancel", role: .cancel) {}
     } message: {
       Text("Future recordings will no longer recognize this voice. Existing transcript labels are preserved.")
+    }
+    .confirmationDialog(
+      "Move this recording to the Trash?",
+      isPresented: recordingTrashConfirmationIsPresented,
+      titleVisibility: .visible
+    ) {
+      Button("Move to Trash", role: .destructive) {
+        guard let recordingToTrash else { return }
+        controller.moveRecordingToTrash(recordingToTrash.id)
+        expandedRecordingIDs.remove(recordingToTrash.id)
+        self.recordingToTrash = nil
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("The recording can be recovered from the Trash until it is emptied.")
     }
     .sheet(item: $speakerEnrollmentRequest) { request in
       speakerEnrollmentSheet(request)
@@ -361,16 +377,25 @@ struct MacContentView: View {
     VStack(spacing: 0) {
       HStack(spacing: 16) {
         Button {
-          controller.play(recording)
+          controller.togglePlayback(for: recording)
         } label: {
-          Image(systemName: "play.fill")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Color.accentColor)
-            .frame(width: 34, height: 34)
-            .background(Color.accentColor.opacity(0.11), in: Circle())
+          Image(
+            systemName: controller.playingRecordingID == recording.id
+              ? "stop.fill"
+              : "play.fill"
+          )
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(Color.accentColor)
+          .frame(width: 34, height: 34)
+          .background(Color.accentColor.opacity(0.11), in: Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Play recording")
+        .accessibilityLabel(
+          controller.playingRecordingID == recording.id
+            ? "Stop recording"
+            : "Play recording"
+        )
+        .accessibilityIdentifier("recording.playback.\(recording.id.uuidString)")
 
         VStack(alignment: .leading, spacing: 5) {
           Text(recording.createdAt.formatted(date: .abbreviated, time: .shortened))
@@ -381,6 +406,8 @@ struct MacContentView: View {
             .foregroundStyle(.secondary)
             .lineLimit(2)
             .frame(maxWidth: .infinity, alignment: .leading)
+
+          offlineTranscriptionProgress(for: recording)
         }
 
         Text(duration(recording.duration))
@@ -389,6 +416,21 @@ struct MacContentView: View {
           .padding(.horizontal, 9)
           .padding(.vertical, 5)
           .background(.quaternary, in: Capsule())
+
+        recordingActions(for: recording)
+
+        Button {
+          recordingToTrash = recording
+        } label: {
+          Image(systemName: "trash")
+            .frame(width: 24, height: 24)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.red)
+        .disabled(controller.offlineTranscriptionRecordingID == recording.id)
+        .help("Move to Trash")
+        .accessibilityLabel("Move recording to Trash")
+        .accessibilityIdentifier("recording.trash.\(recording.id.uuidString)")
 
         if !recording.transcript.isEmpty {
           Button {
@@ -435,6 +477,50 @@ struct MacContentView: View {
       RoundedRectangle(cornerRadius: 12)
         .strokeBorder(.separator.opacity(0.45))
     }
+  }
+
+  @ViewBuilder
+  private func offlineTranscriptionProgress(for recording: MacRecording) -> some View {
+    if controller.offlineTranscriptionRecordingID == recording.id {
+      HStack(spacing: 8) {
+        ProgressView(value: controller.offlineTranscriptionProgress)
+          .frame(width: 120)
+        Text("Transcribing offline…")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .accessibilityIdentifier("recording.offlineTranscriptionProgress")
+    }
+  }
+
+  private func recordingActions(for recording: MacRecording) -> some View {
+    Menu {
+      Button(
+        recording.transcript.isEmpty ? "Transcribe Offline" : "Refine Offline",
+        systemImage: "waveform.badge.magnifyingglass"
+      ) {
+        controller.transcribeOffline(recording.id)
+      }
+      .disabled(
+        controller.isRecording
+          || controller.isFinalizingRecording
+          || controller.offlineTranscriptionRecordingID != nil
+      )
+
+      if recording.liveTranscriptSnapshot != nil {
+        Button("Restore Live Transcript", systemImage: "arrow.uturn.backward") {
+          controller.restoreLiveTranscript(for: recording.id)
+        }
+        .disabled(controller.offlineTranscriptionRecordingID == recording.id)
+      }
+    } label: {
+      Image(systemName: "ellipsis.circle")
+        .frame(width: 24, height: 24)
+    }
+    .menuStyle(.borderlessButton)
+    .fixedSize()
+    .accessibilityLabel("Recording actions")
+    .accessibilityIdentifier("recording.actions.\(recording.id.uuidString)")
   }
 
   @ViewBuilder
@@ -831,7 +917,11 @@ struct MacContentView: View {
                 Toggle("", isOn: $controller.isHandsFreeModeEnabled)
                   .labelsHidden()
                   .toggleStyle(.switch)
-                  .disabled(controller.isRecording || controller.isLoadingModel)
+                  .disabled(
+                    controller.isRecording
+                      || controller.isLoadingModel
+                      || controller.offlineTranscriptionRecordingID != nil
+                  )
                   .accessibilityIdentifier("settings.handsFreeListening")
               }
               .padding(16)
@@ -853,6 +943,7 @@ struct MacContentView: View {
                 Toggle("", isOn: $controller.isLiveTranscriptionEnabled)
                   .labelsHidden()
                   .toggleStyle(.switch)
+                  .disabled(controller.offlineTranscriptionRecordingID != nil)
               }
               .padding(16)
 
@@ -908,7 +999,11 @@ struct MacContentView: View {
                 }
                 .labelsHidden()
                 .frame(width: 250)
-                .disabled(controller.isRecording || controller.isLoadingModel)
+                .disabled(
+                  controller.isRecording
+                    || controller.isLoadingModel
+                    || controller.offlineTranscriptionRecordingID != nil
+                )
                 .accessibilityIdentifier("settings.transcriptionModel")
               }
               .padding(16)
@@ -952,27 +1047,6 @@ struct MacContentView: View {
   private var meetingSummarySettings: some View {
     settingsSection("MEETING SUMMARIES") {
       VStack(spacing: 0) {
-        HStack(spacing: 16) {
-          VStack(alignment: .leading, spacing: 4) {
-            Text("Automatic summaries")
-              .font(.body.weight(.medium))
-            Text("Create a summary after each completed transcription.")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-          }
-
-          Spacer()
-
-          Toggle("", isOn: $controller.automaticSummariesEnabled)
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .accessibilityIdentifier("settings.automaticSummaries")
-        }
-        .padding(16)
-
-        Divider()
-          .padding(.leading, 16)
-
         HStack(spacing: 16) {
           VStack(alignment: .leading, spacing: 4) {
             Text("Summary model")
@@ -1561,19 +1635,30 @@ struct MacContentView: View {
           .shadow(color: statusColor.opacity(0.35), radius: 3)
 
         VStack(alignment: .leading, spacing: 2) {
-          Text(controller.statusText)
-            .font(.subheadline.weight(.medium))
-            .lineLimit(1)
           Text(
-            controller.isFinalizingRecording
-              ? "Finishing on device"
-              : controller.isRecording ? "Recording locally" : "On-device · Private"
+            controller.offlineTranscriptionRecordingID == nil
+              ? controller.statusText
+              : "Transcribing recording offline…"
+          )
+          .font(.subheadline.weight(.medium))
+          .lineLimit(1)
+          Text(
+            controller.offlineTranscriptionRecordingID != nil
+              ? "Full-file transcription and speaker analysis"
+              : controller.isFinalizingRecording
+                ? "Saving live transcript"
+                : controller.isRecording ? "Recording locally" : "On-device · Private"
           )
           .font(.caption)
           .foregroundStyle(.secondary)
         }
 
-        if controller.isLoadingModel {
+        if controller.offlineTranscriptionRecordingID != nil,
+           !controller.isLoadingModel {
+          ProgressView(value: controller.offlineTranscriptionProgress)
+            .frame(width: 120)
+            .padding(.leading, 4)
+        } else if controller.isLoadingModel {
           ProgressView(value: controller.downloadProgress)
             .frame(width: 120)
             .padding(.leading, 4)
@@ -1622,7 +1707,11 @@ struct MacContentView: View {
       .buttonStyle(.borderedProminent)
       .controlSize(.large)
       .tint(controller.isRecording && !controller.isFinalizingRecording ? .red : .accentColor)
-      .disabled(controller.isLoadingModel || controller.isFinalizingRecording)
+      .disabled(
+        controller.isLoadingModel
+          || controller.isFinalizingRecording
+          || controller.offlineTranscriptionRecordingID != nil
+      )
     }
     .padding(.horizontal, 20)
     .padding(.vertical, 14)
@@ -1777,6 +1866,17 @@ struct MacContentView: View {
       set: {
         if !$0 {
           profileToForget = nil
+        }
+      }
+    )
+  }
+
+  private var recordingTrashConfirmationIsPresented: Binding<Bool> {
+    Binding(
+      get: { recordingToTrash != nil },
+      set: {
+        if !$0 {
+          recordingToTrash = nil
         }
       }
     )

@@ -30,7 +30,7 @@ final class JingoMacUITests: XCTestCase {
     ].exists)
     XCTAssertTrue(element("settings.transcriptFontSize").exists)
     XCTAssertTrue(app.staticTexts["14 pt"].exists)
-    XCTAssertTrue(element("settings.automaticSummaries").exists)
+    XCTAssertFalse(element("settings.automaticSummaries").exists)
     XCTAssertTrue(app.staticTexts["On-device"].exists)
     XCTAssertTrue(app.staticTexts["Qwen3 4B · 4-bit"].exists)
     XCTAssertTrue(element("settings.prepareSummaryModel").exists)
@@ -132,6 +132,51 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertEqual(element("speakerTurn.timestamp.1").label, "00:04 – 00:10")
     XCTAssertEqual(element("speakerTurn.text.0").label, "Welcome to the review.")
     XCTAssertTrue(element("speakerTurn.text.1").label.contains("transcript canvas"))
+  }
+
+  func testRecordingActionsOfferOfflineRefinementAndLiveRestore() {
+    launch(scenario: "offline-refined")
+
+    app.buttons["Recordings"].click()
+    let actions = element(
+      "recording.actions.3C476724-2F61-4630-A237-411F9B460A76"
+    )
+    XCTAssertTrue(actions.waitForExistence(timeout: 2))
+    actions.click()
+    XCTAssertTrue(app.menuItems["Refine Offline"].exists)
+    XCTAssertTrue(app.menuItems["Restore Live Transcript"].exists)
+
+    app.menuItems["Restore Live Transcript"].click()
+    XCTAssertTrue(
+      app.staticTexts["The original live transcript is still available."]
+        .waitForExistence(timeout: 2)
+    )
+  }
+
+  func testRecordingPlaybackCanBeStoppedAndRecordingCanMoveToTrash() {
+    launch(scenario: "offline-refined")
+
+    app.buttons["Recordings"].click()
+    let recordingID = "3C476724-2F61-4630-A237-411F9B460A76"
+    let playback = element("recording.playback.\(recordingID)")
+    XCTAssertTrue(playback.waitForExistence(timeout: 2))
+    XCTAssertEqual(playback.label, "Play recording")
+
+    playback.click()
+    let playing = NSPredicate(format: "label == %@", "Stop recording")
+    expectation(for: playing, evaluatedWith: playback)
+    waitForExpectations(timeout: 2)
+
+    playback.click()
+    let stopped = NSPredicate(format: "label == %@", "Play recording")
+    expectation(for: stopped, evaluatedWith: playback)
+    waitForExpectations(timeout: 2)
+
+    let trash = element("recording.trash.\(recordingID)")
+    XCTAssertTrue(trash.exists)
+    trash.click()
+    XCTAssertTrue(app.buttons["Move to Trash"].waitForExistence(timeout: 2))
+    app.buttons["Cancel"].click()
   }
 
   func testFailedSummaryOffersModelDownload() {

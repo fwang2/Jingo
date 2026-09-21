@@ -71,6 +71,16 @@ enum MacTranscriptionModel: String, CaseIterable, Identifiable, Sendable {
   }
 }
 
+// MARK: - MacTranscriptSnapshot
+
+struct MacTranscriptSnapshot: Codable, Equatable, Sendable {
+  var transcript: String
+  var speakerTurns: [MacSpeakerTurn]?
+  var speakerNames: [String: String]?
+  var speakerEmbeddings: [String: [Float]]?
+  var speakerProfileIDs: [String: UUID]?
+}
+
 // MARK: - MacRecording
 
 struct MacRecording: Codable, Equatable, Identifiable {
@@ -84,6 +94,43 @@ struct MacRecording: Codable, Equatable, Identifiable {
   var speakerEmbeddings: [String: [Float]]?
   var speakerProfileIDs: [String: UUID]?
   var summary: MeetingSummary? = nil
+  var liveTranscriptSnapshot: MacTranscriptSnapshot? = nil
+
+  var transcriptSnapshot: MacTranscriptSnapshot {
+    MacTranscriptSnapshot(
+      transcript: transcript,
+      speakerTurns: speakerTurns,
+      speakerNames: speakerNames,
+      speakerEmbeddings: speakerEmbeddings,
+      speakerProfileIDs: speakerProfileIDs
+    )
+  }
+
+  mutating func applyTranscriptSnapshot(_ snapshot: MacTranscriptSnapshot) {
+    transcript = snapshot.transcript
+    speakerTurns = snapshot.speakerTurns
+    speakerNames = snapshot.speakerNames
+    speakerEmbeddings = snapshot.speakerEmbeddings
+    speakerProfileIDs = snapshot.speakerProfileIDs
+  }
+
+  mutating func preserveLiveTranscriptIfNeeded() {
+    guard liveTranscriptSnapshot == nil,
+          !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      return
+    }
+    liveTranscriptSnapshot = transcriptSnapshot
+  }
+
+  mutating func restoreLiveTranscript() -> Bool {
+    guard let liveTranscriptSnapshot else {
+      return false
+    }
+    applyTranscriptSnapshot(liveTranscriptSnapshot)
+    self.liveTranscriptSnapshot = nil
+    return true
+  }
 }
 
 // MARK: - MacFinalTranscription
@@ -411,6 +458,7 @@ final class MacTranscriptionController: ObservableObject {
   @Published var speakerNames: [String: String] = [:]
   @Published private(set) var speakerProfiles: [SpeakerProfile]
   @Published private(set) var playingSpeakerSampleID: UUID?
+  @Published private(set) var playingRecordingID: UUID?
   @Published var isRecordingSpeakerSample = false
   @Published var isProcessingSpeakerSample = false
   @Published private(set) var speakerSampleSpeechDuration: TimeInterval = 0
@@ -421,6 +469,8 @@ final class MacTranscriptionController: ObservableObject {
   @Published var isModelReady = false
   @Published var isRecording = false
   @Published private(set) var isFinalizingRecording = false
+  @Published private(set) var offlineTranscriptionRecordingID: UUID?
+  @Published private(set) var offlineTranscriptionProgress = 0.0
   @Published private(set) var recordingElapsedTime: TimeInterval = 0
   @Published private(set) var recentWaveformLevels: [Float] = []
   @Published var audioSourceMode: MacAudioSourceMode {
@@ -562,10 +612,12 @@ final class MacTranscriptionController: ObservableObject {
   private var speakerEmbeddings: [String: [Float]] = [:]
   private var speakerProfileIDs: [String: UUID] = [:]
   private var operationTask: Task<Void, Never>?
+  private var offlineTranscriptionTask: Task<Void, Never>?
   private var pendingTranscriptUpdateTask: Task<Void, Never>?
   private var pendingTranscriptText: String?
   private var speakerSampleMonitoringTask: Task<Void, Never>?
   private var audioPlayer: AVAudioPlayer?
+  private var recordingPlaybackTask: Task<Void, Never>?
   private var speakerSamplePlaybackTask: Task<Void, Never>?
   private var summaryPreparationTask: Task<Void, Never>?
   private var summaryTasks: [UUID: Task<Void, Never>] = [:]
@@ -1312,6 +1364,20 @@ final class MacTranscriptionController: ObservableObject {
         ]
       )
 
+    case "offline-refined":
+      installUITestRecording(
+        transcript: "The refined offline transcript has improved speaker timing.",
+        turns: [],
+        names: [:]
+      )
+      recordings[0].liveTranscriptSnapshot = MacTranscriptSnapshot(
+        transcript: "The original live transcript is still available.",
+        speakerTurns: nil,
+        speakerNames: nil,
+        speakerEmbeddings: nil,
+        speakerProfileIDs: nil
+      )
+
     case "summary-failed":
       installUITestRecording(
         transcript: "The team approved the launch plan and assigned the final review.",
@@ -1405,6 +1471,9 @@ final class MacTranscriptionController: ObservableObject {
     )
 
     recordings = [recording]
+    #if DEBUG
+      try? recordingStore.installUITestRecordingAudio(recording)
+    #endif
     self.transcript = transcript
     speakerAttributedText = transcript
     speakerTurns = turns
@@ -1463,13 +1532,13 @@ final class MacTranscriptionController: ObservableObject {
   }
 
   func toggleRecording() {
-    guard !isFinalizingRecording else { return }
+    guard !isFinalizingRecording, offlineTranscriptionRecordingID == nil else { return }
     if isRecording {
       isFinalizingRecording = true
       statusText = "Finalizing recording…"
       operationTask = Task { [weak self] in
         guard let self else { return }
-        await engine.stopRecording(speakerProfiles: speakerProfiles)
+        await engine.stopRecording()
       }
       return
     }
@@ -1539,7 +1608,7 @@ final class MacTranscriptionController: ObservableObject {
             speakerEmbeddings = result.speakerEmbeddings
             speakerProfileIDs = result.speakerProfileIDs
             speakerNames = result.speakerNames
-            let completedRecordingID = finishActiveRecording()
+            _ = finishActiveRecording()
             isRecording = false
             isFinalizingRecording = false
             resetRecordingVisualization()
@@ -1548,9 +1617,6 @@ final class MacTranscriptionController: ObservableObject {
               statusText = "Ready · speaker refinement incomplete"
             } else {
               statusText = isModelReady ? "Ready" : "Ready to record"
-            }
-            if automaticSummariesEnabled, let completedRecordingID {
-              generateSummary(for: completedRecordingID)
             }
           case let .failure(message):
             flushPendingTranscriptUpdate()
@@ -1608,6 +1674,81 @@ final class MacTranscriptionController: ObservableObject {
     speakerEmbeddings = [:]
     speakerProfileIDs = [:]
     displayedRecordingID = nil
+  }
+
+  func transcribeOffline(_ recordingID: UUID) {
+    guard !isRecording,
+          !isFinalizingRecording,
+          offlineTranscriptionRecordingID == nil,
+          let recording = recordings.first(where: { $0.id == recordingID })
+    else {
+      return
+    }
+
+    let audioURL = recordingStore.audioURL(for: recording)
+    offlineTranscriptionRecordingID = recordingID
+    offlineTranscriptionProgress = 0
+    offlineTranscriptionTask = Task { [weak self] in
+      guard let self else {
+        return
+      }
+      defer {
+        offlineTranscriptionRecordingID = nil
+        offlineTranscriptionProgress = 0
+        offlineTranscriptionTask = nil
+      }
+
+      do {
+        if !isModelReady {
+          try await loadModel()
+        }
+        let snapshot = try await engine.transcribeAudioFile(
+          audioURL,
+          speakerProfiles: speakerProfiles
+        ) { [weak self] progress in
+          self?.offlineTranscriptionProgress = min(max(progress, 0), 1)
+        }
+        try Task.checkCancellation()
+        guard let index = recordings.firstIndex(where: { $0.id == recordingID }) else {
+          return
+        }
+
+        recordings[index].preserveLiveTranscriptIfNeeded()
+        recordings[index].applyTranscriptSnapshot(snapshot)
+        recordings[index].summary = nil
+        presentTranscript(recordings[index])
+        saveRecordingsReportingError(automaticBackupRecordingIDs: [recordingID])
+      } catch is CancellationError {
+        return
+      } catch {
+        errorMessage = "Offline transcription failed. \(error.localizedDescription)"
+      }
+    }
+  }
+
+  func restoreLiveTranscript(for recordingID: UUID) {
+    guard offlineTranscriptionRecordingID != recordingID,
+          let index = recordings.firstIndex(where: { $0.id == recordingID }),
+          recordings[index].restoreLiveTranscript()
+    else {
+      return
+    }
+
+    recordings[index].summary = nil
+    presentTranscript(recordings[index])
+    saveRecordingsReportingError(automaticBackupRecordingIDs: [recordingID])
+  }
+
+  private func presentTranscript(_ recording: MacRecording) {
+    guard recording.id == displayedRecordingID else {
+      return
+    }
+    transcript = recording.transcript
+    speakerTurns = recording.speakerTurns ?? []
+    speakerNames = recording.speakerNames ?? [:]
+    speakerEmbeddings = recording.speakerEmbeddings ?? [:]
+    speakerProfileIDs = recording.speakerProfileIDs ?? [:]
+    speakerAttributedText = speakerTurns.isEmpty ? "" : transcript
   }
 
   func prepareSummaryModel() {
@@ -2021,13 +2162,61 @@ final class MacTranscriptionController: ObservableObject {
   func play(_ recording: MacRecording, at startTimeMS: Int64 = 0) {
     do {
       stopSpeakerSamplePlayback()
+      stopRecordingPlayback()
       let player = try AVAudioPlayer(contentsOf: recordingStore.audioURL(for: recording))
       player.currentTime = max(0, Double(startTimeMS) / 1000)
       player.prepareToPlay()
-      player.play()
+      guard player.play() else {
+        throw MacTranscriptionError.audioPlaybackFailed
+      }
       audioPlayer = player
+      playingRecordingID = recording.id
+      let remainingDuration = max(0, player.duration - player.currentTime)
+      recordingPlaybackTask = Task { [weak self] in
+        try? await Task.sleep(for: .seconds(remainingDuration))
+        guard !Task.isCancelled, self?.playingRecordingID == recording.id else { return }
+        self?.stopRecordingPlayback()
+      }
     } catch {
+      stopRecordingPlayback()
       errorMessage = error.localizedDescription
+    }
+  }
+
+  func togglePlayback(for recording: MacRecording) {
+    if playingRecordingID == recording.id {
+      stopRecordingPlayback()
+    } else {
+      play(recording)
+    }
+  }
+
+  func moveRecordingToTrash(_ recordingID: UUID) {
+    guard offlineTranscriptionRecordingID != recordingID,
+          let index = recordings.firstIndex(where: { $0.id == recordingID })
+    else {
+      return
+    }
+
+    let recording = recordings[index]
+    let audioURL = recordingStore.audioURL(for: recording)
+    do {
+      if FileManager.default.fileExists(atPath: audioURL.path) {
+        try FileManager.default.trashItem(at: audioURL, resultingItemURL: nil)
+      }
+      if playingRecordingID == recordingID {
+        stopRecordingPlayback()
+      }
+      summaryTasks[recordingID]?.cancel()
+      summaryTasks[recordingID] = nil
+      summaryTaskTokens[recordingID] = nil
+      recordings.remove(at: index)
+      if displayedRecordingID == recordingID {
+        clearTranscript()
+      }
+      try recordingStore.save(recordings)
+    } catch {
+      errorMessage = "The recording could not be moved to the Trash. \(error.localizedDescription)"
     }
   }
 
@@ -2046,7 +2235,7 @@ final class MacTranscriptionController: ObservableObject {
         return
       }
       stopSpeakerSamplePlayback()
-      audioPlayer?.stop()
+      stopRecordingPlayback()
       let player = try AVAudioPlayer(contentsOf: sampleURL)
       player.prepareToPlay()
       guard player.play() else {
@@ -2071,6 +2260,14 @@ final class MacTranscriptionController: ObservableObject {
     audioPlayer?.stop()
     audioPlayer = nil
     playingSpeakerSampleID = nil
+  }
+
+  private func stopRecordingPlayback() {
+    recordingPlaybackTask?.cancel()
+    recordingPlaybackTask = nil
+    audioPlayer?.stop()
+    audioPlayer = nil
+    playingRecordingID = nil
   }
 
   private func loadModel() async throws {
@@ -2252,6 +2449,19 @@ private struct MacRecordingStore: Sendable {
   }
 
   #if DEBUG
+    func installUITestRecordingAudio(_ recording: MacRecording) throws {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let recordingURL = audioURL(for: recording)
+      if FileManager.default.fileExists(atPath: recordingURL.path) {
+        try FileManager.default.removeItem(at: recordingURL)
+      }
+      let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
+      let file = try AVAudioFile(forWriting: recordingURL, settings: format.settings)
+      let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32000)!
+      buffer.frameLength = 32000
+      try file.write(from: buffer)
+    }
+
     func installUITestSpeakerSample(profileID: UUID) throws {
       try FileManager.default.createDirectory(at: speakerSamplesDirectory, withIntermediateDirectories: true)
       let sampleURL = speakerSampleFileURL(profileID: profileID)
@@ -2476,6 +2686,168 @@ private actor MacTranscriptionEngine {
   func speakerEnrollmentEmbedding(from fileURL: URL) async throws -> [Float] {
     let result = try await speakerPipeline.diarize(fileURL)
     return try result.enrollmentEmbedding()
+  }
+
+  func transcribeAudioFile(
+    _ fileURL: URL,
+    speakerProfiles: [SpeakerProfile],
+    progressHandler: @escaping @MainActor @Sendable (Double) -> Void
+  ) async throws -> MacTranscriptSnapshot {
+    guard FileManager.default.fileExists(atPath: fileURL.path) else {
+      throw MacTranscriptionError.missingRecording
+    }
+    guard let loadedTranscriptionModel else {
+      throw MacTranscriptionError.modelNotLoaded
+    }
+
+    let samples = try Self.loadAudioSamples(from: fileURL)
+    guard !samples.isEmpty else {
+      throw MacTranscriptionError.emptyRecording
+    }
+    await progressHandler(0.05)
+
+    async let diarizationTask = speakerPipeline.diarize(fileURL)
+    let transcription = try await offlineTranscription(
+      of: samples,
+      using: loadedTranscriptionModel,
+      progressHandler: progressHandler
+    )
+    guard !transcription.text.isEmpty, !transcription.chunks.isEmpty else {
+      throw MacTranscriptionError.emptyTranscription
+    }
+    try Task.checkCancellation()
+    let diarization = try await diarizationTask
+    await progressHandler(0.78)
+    let turns = try await speakerPipeline.alignAndMerge(
+      samples: samples,
+      transcript: transcription.text,
+      chunks: transcription.chunks,
+      diarization: diarization.intervals
+    )
+    try Task.checkCancellation()
+    let restoredText = SpeakerAttributionCore.joinTranscript(turns.map(\.text))
+    let finalText = restoredText.isEmpty ? transcription.text : restoredText
+    let matches = SpeakerProfileMatcher.matches(
+      speakerEmbeddingCandidates: diarization.speakerEmbeddingCandidates,
+      profiles: speakerProfiles,
+      fallbackSimilarity: SpeakerProfileMatcher.fallbackMinimumSimilarity,
+      fallbackMargin: SpeakerProfileMatcher.fallbackMinimumMargin
+    )
+    await progressHandler(1)
+
+    return MacTranscriptSnapshot(
+      transcript: finalText,
+      speakerTurns: turns.isEmpty ? nil : turns,
+      speakerNames: matches.isEmpty ? nil : matches.mapValues(\.name),
+      speakerEmbeddings: diarization.speakerEmbeddings.isEmpty
+        ? nil
+        : diarization.speakerEmbeddings,
+      speakerProfileIDs: matches.isEmpty ? nil : matches.mapValues(\.profileID)
+    )
+  }
+
+  private struct OfflineTranscription {
+    let text: String
+    let chunks: [MacTranscriptionChunk]
+  }
+
+  private func offlineTranscription(
+    of samples: [Float],
+    using model: MacTranscriptionModel,
+    progressHandler: @escaping @MainActor @Sendable (Double) -> Void
+  ) async throws -> OfflineTranscription {
+    switch model {
+    case .parakeetUnifiedEN:
+      try await transcribeOfflineWithParakeet(samples, progressHandler: progressHandler)
+
+    case .qwen3ASR:
+      try await transcribeOfflineWithQwen(samples, progressHandler: progressHandler)
+
+    case .whisperLargeV3Turbo:
+      try await transcribeOfflineWithWhisper(samples, progressHandler: progressHandler)
+    }
+  }
+
+  private func transcribeOfflineWithParakeet(
+    _ samples: [Float],
+    progressHandler: @escaping @MainActor @Sendable (Double) -> Void
+  ) async throws -> OfflineTranscription {
+    guard let parakeetModel else {
+      throw MacTranscriptionError.modelNotLoaded
+    }
+    try await parakeetModel.reset()
+    let batchSize = Int(Self.sampleRate)
+    var processedSamples = 0
+    while processedSamples < samples.count {
+      try Task.checkCancellation()
+      let end = min(processedSamples + batchSize, samples.count)
+      let buffer = try Self.makeAudioBuffer(from: Array(samples[processedSamples ..< end]))
+      try await parakeetModel.appendAudio(buffer)
+      try await parakeetModel.processBufferedAudio()
+      processedSamples = end
+      let fraction = Double(processedSamples) / Double(samples.count)
+      await progressHandler(0.05 + fraction * 0.55)
+    }
+
+    let text = try await parakeetModel.finish()
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let duration = Double(samples.count) / Self.sampleRate
+    let chunk = MacTranscriptionChunk(
+      text: text,
+      startTimeMS: 0,
+      endTimeMS: Int64((duration * 1000).rounded()),
+      language: "English"
+    )
+    return OfflineTranscription(text: text, chunks: text.isEmpty ? [] : [chunk])
+  }
+
+  private func transcribeOfflineWithQwen(
+    _ samples: [Float],
+    progressHandler: @escaping @MainActor @Sendable (Double) -> Void
+  ) async throws -> OfflineTranscription {
+    guard let qwenModel else {
+      throw MacTranscriptionError.modelNotLoaded
+    }
+    let output = qwenModel.generate(
+      audio: MLXArray(samples),
+      generationParameters: STTGenerateParameters(
+        maxTokens: 8192,
+        language: "English",
+        chunkDuration: 30,
+        minChunkDuration: 1
+      )
+    )
+    await progressHandler(0.6)
+    return OfflineTranscription(
+      text: QwenStreamingTextCleaner.clean(output.text),
+      chunks: Self.makeTranscriptionChunks(
+        from: output,
+        fallbackDuration: Double(samples.count) / Self.sampleRate
+      )
+    )
+  }
+
+  private func transcribeOfflineWithWhisper(
+    _ samples: [Float],
+    progressHandler: @escaping @MainActor @Sendable (Double) -> Void
+  ) async throws -> OfflineTranscription {
+    guard let whisperModels else {
+      throw MacTranscriptionError.modelNotLoaded
+    }
+    let output = whisperModels.transcriptionModel.generate(
+      audio: MLXArray(samples),
+      generationParameters: Self.englishWhisperGenerationParameters(
+        for: whisperModels.transcriptionModel
+      )
+    )
+    await progressHandler(0.6)
+    return OfflineTranscription(
+      text: output.text.trimmingCharacters(in: .whitespacesAndNewlines),
+      chunks: Self.makeTranscriptionChunks(
+        from: output,
+        fallbackDuration: Double(samples.count) / Self.sampleRate
+      )
+    )
   }
 
   func startRecording(
@@ -2715,8 +3087,7 @@ private actor MacTranscriptionEngine {
     }
   }
 
-  func stopRecording(speakerProfiles: [SpeakerProfile]) async {
-    let completedRecordingURL = recordingURL
+  func stopRecording() async {
     if let audioEngine {
       audioEngine.inputNode.removeTap(onBus: 0)
       audioEngine.stop()
@@ -2750,97 +3121,17 @@ private actor MacTranscriptionEngine {
       _ = await eventTask?.value
       eventTask = nil
 
-      var finalText = streamingTranscriptState.resolvedText()
+      let finalText = streamingTranscriptState.resolvedText()
       let checkpoint = checkpointState.snapshot()
-      var attributedText = checkpoint?.text ?? ""
-      var speakerTurns = checkpoint?.speakerTurns ?? []
-      var speakerEmbeddings = checkpoint?.speakerEmbeddings ?? [:]
-      var speakerProfileIDs = checkpoint?.speakerProfileIDs ?? [:]
-      var speakerNames = checkpoint?.speakerNames ?? [:]
-      var refinementError: String?
-      let allSamples = streamingAudioBuffer.snapshot()
-      let output: STTOutput? = if allSamples.count >= Int(Self.sampleRate),
-                                  let qwenModel {
-        qwenModel.generate(
-          audio: MLXArray(allSamples),
-          generationParameters: STTGenerateParameters(
-            maxTokens: 8192,
-            language: "English",
-            chunkDuration: 30,
-            minChunkDuration: 1
-          )
-        )
-      } else if allSamples.count >= Int(Self.sampleRate),
-                let whisperModels {
-        whisperModels.transcriptionModel.generate(
-          audio: MLXArray(allSamples),
-          generationParameters: Self.englishWhisperGenerationParameters(
-            for: whisperModels.transcriptionModel
-          )
-        )
-      } else {
-        nil
-      }
-      var chunks: [MacTranscriptionChunk] = []
-      if let output {
-        let batchText = QwenStreamingTextCleaner.clean(output.text)
-        if !batchText.isEmpty {
-          finalText = batchText
-        }
-        chunks = Self.makeTranscriptionChunks(
-          from: output,
-          fallbackDuration: Double(allSamples.count) / Self.sampleRate
-        )
-      } else if loadedTranscriptionModel == .parakeetUnifiedEN,
-                !finalText.isEmpty,
-                allSamples.count >= Int(Self.sampleRate) {
-        chunks = [MacTranscriptionChunk(
-          text: finalText,
-          startTimeMS: 0,
-          endTimeMS: Int64(
-            (Double(allSamples.count) / Self.sampleRate * 1000).rounded()
-          ),
-          language: "English"
-        )]
-      }
-      if !chunks.isEmpty {
-        do {
-          guard let completedRecordingURL else {
-            throw MacTranscriptionError.missingRecording
-          }
-          let diarization = try await speakerPipeline.diarize(completedRecordingURL)
-          let turns = try await speakerPipeline.alignAndMerge(
-            samples: allSamples,
-            transcript: finalText,
-            chunks: chunks,
-            diarization: diarization.intervals
-          )
-          let restoredText = SpeakerAttributionCore.joinTranscript(turns.map(\.text))
-          if !restoredText.isEmpty {
-            finalText = restoredText
-          }
-          attributedText = turns.isEmpty ? "" : finalText
-          speakerTurns = turns
-          speakerEmbeddings = diarization.speakerEmbeddings
-          let matches = SpeakerProfileMatcher.matches(
-            speakerEmbeddingCandidates: diarization.speakerEmbeddingCandidates,
-            profiles: speakerProfiles
-          )
-          speakerProfileIDs = matches.mapValues(\.profileID)
-          speakerNames = matches.mapValues(\.name)
-        } catch {
-          refinementError = error.localizedDescription
-        }
-      }
       if let eventHandler {
         await eventHandler(.stopped(MacFinalTranscription(
           text: finalText,
-          attributedText: attributedText,
-          speakerTurns: speakerTurns,
-          speakerEmbeddings: speakerEmbeddings,
-          speakerProfileIDs: speakerProfileIDs,
-          speakerNames: speakerNames,
-          refinementError: refinementError
+          attributedText: checkpoint?.text ?? "",
+          speakerTurns: checkpoint?.speakerTurns ?? [],
+          speakerEmbeddings: checkpoint?.speakerEmbeddings ?? [:],
+          speakerProfileIDs: checkpoint?.speakerProfileIDs ?? [:],
+          speakerNames: checkpoint?.speakerNames ?? [:],
+          refinementError: nil
         )))
       }
     } else if let eventHandler {
@@ -3228,6 +3519,38 @@ private actor MacTranscriptionEngine {
     return buffer
   }
 
+  private nonisolated static func loadAudioSamples(from fileURL: URL) throws -> [Float] {
+    let audioFile = try AVAudioFile(forReading: fileURL)
+    guard audioFile.length > 0,
+          audioFile.length <= AVAudioFramePosition(UInt32.max),
+          let inputBuffer = AVAudioPCMBuffer(
+            pcmFormat: audioFile.processingFormat,
+            frameCapacity: AVAudioFrameCount(audioFile.length)
+          )
+    else {
+      throw MacTranscriptionError.emptyRecording
+    }
+    try audioFile.read(into: inputBuffer)
+
+    let inputFormat = inputBuffer.format
+    if inputFormat.channelCount == 1,
+       abs(inputFormat.sampleRate - sampleRate) < 0.5 {
+      return samples(from: inputBuffer)
+    }
+
+    guard let outputFormat = AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: sampleRate,
+      channels: 1,
+      interleaved: false
+    ),
+      let converter = AVAudioConverter(from: inputFormat, to: outputFormat)
+    else {
+      throw MacTranscriptionError.audioConversionFailed
+    }
+    return try samples(from: resampleBuffer(inputBuffer, with: converter))
+  }
+
   private nonisolated static func samples(from buffer: AVAudioPCMBuffer) -> [Float] {
     guard let channel = buffer.floatChannelData?.pointee else { return [] }
     return Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
@@ -3273,6 +3596,8 @@ private enum MacTranscriptionError: LocalizedError {
   case audioConversionFailed
   case audioRecordingFailed
   case audioPlaybackFailed
+  case emptyRecording
+  case emptyTranscription
   case missingRecording
 
   var errorDescription: String? {
@@ -3291,8 +3616,12 @@ private enum MacTranscriptionError: LocalizedError {
       "The voice sample recording could not be started."
     case .audioPlaybackFailed:
       "The voice sample could not be played."
+    case .emptyRecording:
+      "The recording does not contain usable audio."
+    case .emptyTranscription:
+      "The selected model did not detect any speech in this recording."
     case .missingRecording:
-      "The completed recording could not be found for speaker refinement."
+      "The recording audio could not be found."
     }
   }
 }

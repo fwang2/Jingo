@@ -70,6 +70,45 @@ final class SpeakerProfileMatcherTests: XCTestCase {
     ).isEmpty)
   }
 
+  func testAcceptsClearFallbackMatch() throws {
+    let alice = SpeakerProfile(name: "Alice", embedding: [1, 0, 0])
+    let bob = SpeakerProfile(name: "Bob", embedding: [0, 1, 0])
+    let matches = SpeakerProfileMatcher.matches(
+      speakerEmbeddings: ["speaker-0": [0.63, 0.20, 0.75]],
+      profiles: [alice, bob],
+      fallbackSimilarity: SpeakerProfileMatcher.fallbackMinimumSimilarity,
+      fallbackMargin: SpeakerProfileMatcher.fallbackMinimumMargin
+    )
+
+    let match = try XCTUnwrap(matches["speaker-0"])
+    XCTAssertEqual(match.profileID, alice.id)
+    XCTAssertEqual(match.name, "Alice")
+  }
+
+  func testRejectsWeakFallbackMatch() {
+    let alice = SpeakerProfile(name: "Alice", embedding: [1, 0, 0])
+    let bob = SpeakerProfile(name: "Bob", embedding: [0, 1, 0])
+
+    XCTAssertTrue(SpeakerProfileMatcher.matches(
+      speakerEmbeddings: ["speaker-0": [0.55, 0.10, 0.83]],
+      profiles: [alice, bob],
+      fallbackSimilarity: SpeakerProfileMatcher.fallbackMinimumSimilarity,
+      fallbackMargin: SpeakerProfileMatcher.fallbackMinimumMargin
+    ).isEmpty)
+  }
+
+  func testRejectsAmbiguousFallbackMatch() {
+    let alice = SpeakerProfile(name: "Alice", embedding: [1, 0, 0])
+    let bob = SpeakerProfile(name: "Bob", embedding: [0, 1, 0])
+
+    XCTAssertTrue(SpeakerProfileMatcher.matches(
+      speakerEmbeddings: ["speaker-0": [0.65, 0.55, 0.52]],
+      profiles: [alice, bob],
+      fallbackSimilarity: SpeakerProfileMatcher.fallbackMinimumSimilarity,
+      fallbackMargin: SpeakerProfileMatcher.fallbackMinimumMargin
+    ).isEmpty)
+  }
+
   func testEnrollCreatesThenUpdatesNamedProfile() throws {
     var profiles: [SpeakerProfile] = []
     let profileID = try XCTUnwrap(SpeakerProfileMatcher.enroll(

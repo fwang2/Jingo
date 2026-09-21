@@ -27,7 +27,7 @@
 - Offers English-optimized Qwen3-ASR and Whisper Large-v3-Turbo alternatives on Mac, while the iPhone and iPad pipeline retains English, Chinese, and mixed-language transcription.
 - Supports optional hands-free listening on Mac so transcription can start automatically while Jingo is running.
 - Separates conversations into timestamped speaker turns with FluidAudio diarization.
-- Refines speaker attribution periodically during longer Mac recordings and performs a final full-recording pass when recording stops.
+- Keeps live transcription lightweight, then offers a separate full-recording offline pass for improved alignment and speaker attribution.
 - Learns known speakers from conversations or dedicated voice samples, then recognizes them in later recordings.
 - Creates structured meeting summaries locally on Mac, including findings, decisions, unresolved items, participant contributions, actions, risks, and meeting status.
 - Keeps recordings, transcripts, voice profiles, and model inference on the device.
@@ -42,12 +42,14 @@ Jingo does not make the mobile app pay the memory cost of the desktop pipeline, 
 
 | Platform | Transcription | Speaker processing | Meeting summaries |
 | --- | --- | --- | --- |
-| Mac | Parakeet Unified EN by default; selectable Qwen3-ASR 1.7B, 4-bit or Whisper Large-v3-Turbo | High-performance pipeline with concurrent processing, adaptive checkpoints, and final refinement | Qwen3 4B Instruct, 4-bit |
+| Mac | Parakeet Unified EN by default; selectable Qwen3-ASR 1.7B, 4-bit or Whisper Large-v3-Turbo | Live checkpoints plus an explicit full-recording offline refinement action | Qwen3 4B Instruct, 4-bit |
 | iPhone and iPad | Qwen3-ASR 0.6B, 4-bit | Resource-constrained sequential pipeline that unloads large auxiliary models between stages | Not currently available |
 
 Both paths use Qwen forced alignment to place words on the timeline and FluidAudio to perform speaker diarization.
 
 On Mac, Parakeet Unified EN is optimized for real-time English with punctuation and capitalization and is selected for new installations. The selectable Qwen and Whisper engines also constrain decoding to English for lower language-selection overhead and more stable English output. The iPhone and iPad Qwen pipeline remains multilingual.
+
+For a saved Mac recording, choose **Transcribe Offline** or **Refine Offline** from its actions menu. Jingo reprocesses the complete audio, performs forced alignment and diarization, and replaces the displayed live result. When a live transcript existed, it is retained until you choose **Restore Live Transcript**.
 
 ## Privacy and Model Downloads
 
@@ -57,7 +59,7 @@ Known-speaker voice samples are stored locally. A sample needs at least six seco
 
 ## Local Meeting Summaries on Mac
 
-Jingo can automatically summarize a recording after transcription finishes or create a summary later from the recording card. The separate Qwen3 4B Instruct model runs through MLX on Apple silicon and can be downloaded from **Settings → Meeting Summaries**.
+Jingo creates a summary when you choose **Create Summary** from an expanded recording card. The separate Qwen3 4B Instruct model runs through MLX on Apple silicon and can be downloaded from **Settings → Meeting Summaries**.
 
 Summary detail scales with the recording duration and transcript density. Brief recordings receive a correspondingly short result, while substantive meetings can include:
 

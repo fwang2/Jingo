@@ -69,10 +69,12 @@ public enum SpeakerProfileEnrollmentError: LocalizedError, Equatable, Sendable {
 
 public enum SpeakerProfileMatcher {
   // FluidAudio's offline clustering uses a 0.6 Euclidean boundary for unit vectors,
-  // which corresponds to 0.82 cosine similarity. Matching across recordings should
-  // be at least this strict because a wrong name is worse than an unnamed speaker.
+  // which corresponds to 0.82 cosine similarity. Across recording conditions, allow
+  // a lower score only when the best profile is clearly separated from the runner-up.
   public static let defaultMinimumSimilarity: Float = 0.82
   public static let defaultMinimumMargin: Float = 0.05
+  public static let fallbackMinimumSimilarity: Float = 0.60
+  public static let fallbackMinimumMargin: Float = 0.20
   public static let minimumEnrollmentSpeechMS: Int64 = 6000
   public static let minimumEnrollmentDominance: Double = 0.85
 
@@ -140,13 +142,17 @@ public enum SpeakerProfileMatcher {
     speakerEmbeddings: [String: [Float]],
     profiles: [SpeakerProfile],
     minimumSimilarity: Float = defaultMinimumSimilarity,
-    minimumMargin: Float = defaultMinimumMargin
+    minimumMargin: Float = defaultMinimumMargin,
+    fallbackSimilarity: Float? = nil,
+    fallbackMargin: Float = fallbackMinimumMargin
   ) -> [String: SpeakerProfileMatch] {
     matches(
       speakerEmbeddingCandidates: speakerEmbeddings.mapValues { [$0] },
       profiles: profiles,
       minimumSimilarity: minimumSimilarity,
-      minimumMargin: minimumMargin
+      minimumMargin: minimumMargin,
+      fallbackSimilarity: fallbackSimilarity,
+      fallbackMargin: fallbackMargin
     )
   }
 
@@ -154,7 +160,9 @@ public enum SpeakerProfileMatcher {
     speakerEmbeddingCandidates: [String: [[Float]]],
     profiles: [SpeakerProfile],
     minimumSimilarity: Float = defaultMinimumSimilarity,
-    minimumMargin: Float = defaultMinimumMargin
+    minimumMargin: Float = defaultMinimumMargin,
+    fallbackSimilarity: Float? = nil,
+    fallbackMargin: Float = fallbackMinimumMargin
   ) -> [String: SpeakerProfileMatch] {
     struct Candidate {
       let speakerID: String
@@ -168,8 +176,7 @@ public enum SpeakerProfileMatcher {
         let similarities = embeddings.compactMap {
           cosineSimilarity($0, profile.embedding)
         }
-        guard let similarity = similarities.max(), similarity >= minimumSimilarity
-        else {
+        guard let similarity = similarities.max() else {
           return nil
         }
         return Candidate(speakerID: speakerID, profile: profile, similarity: similarity)
@@ -182,7 +189,15 @@ public enum SpeakerProfileMatcher {
       }
 
       guard let best = ranked.first else { continue }
-      if ranked.count > 1, best.similarity - ranked[1].similarity < minimumMargin {
+      let margin = ranked.dropFirst().first.map {
+        best.similarity - $0.similarity
+      } ?? .infinity
+      let isStrongMatch = best.similarity >= minimumSimilarity
+        && margin >= minimumMargin
+      let isClearFallbackMatch = fallbackSimilarity.map {
+        best.similarity >= $0 && margin >= fallbackMargin
+      } ?? false
+      guard isStrongMatch || isClearFallbackMatch else {
         continue
       }
       candidates.append(best)
