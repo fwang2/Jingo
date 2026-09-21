@@ -1387,6 +1387,22 @@ final class MacTranscriptionController: ObservableObject {
       recentWaveformLevels = Self.previewWaveformLevels
       statusText = "Listening and transcribing…"
 
+    case "stopped-checkpoint-tail":
+      speakerAttributedText = "Welcome to the review."
+      transcript = speakerAttributedText + " This final sentence arrived while stopping."
+      speakerTurns = [
+        MacSpeakerTurn(
+          speakerID: "speaker-1",
+          startTimeMS: 1000,
+          endTimeMS: 5000,
+          text: speakerAttributedText,
+          words: []
+        ),
+      ]
+      speakerNames = ["speaker-1": "Feiyi"]
+      isRecording = false
+      statusText = "Ready"
+
     case "single-speaker":
       installUITestRecording(
         transcript: "The finalized transcript remains in place and keeps the same readable typography.",
@@ -1679,7 +1695,7 @@ final class MacTranscriptionController: ObservableObject {
       statusText = "Finalizing recording…"
       operationTask = Task { [weak self] in
         guard let self else { return }
-        await engine.stopRecording()
+        await engine.stopRecording(speakerProfiles: speakerProfiles)
       }
       return
     }
@@ -3290,7 +3306,7 @@ private actor MacTranscriptionEngine {
     }
   }
 
-  func stopRecording() async {
+  func stopRecording(speakerProfiles: [SpeakerProfile]) async {
     if let audioEngine {
       audioEngine.inputNode.removeTap(onBus: 0)
       audioEngine.stop()
@@ -3325,21 +3341,28 @@ private actor MacTranscriptionEngine {
       eventTask = nil
 
       let finalText = streamingTranscriptState.resolvedText()
-      let checkpoint = checkpointState.snapshot().flatMap { checkpoint in
-        SpeakerAttributionCore.hasSufficientAlignmentCoverage(
+      let latestCheckpoint = checkpointState.snapshot()
+      var finalCheckpoint = latestCheckpoint
+      var refinementError: String?
+      do {
+        if let refinedCheckpoint = try await makeFinalSpeakerCheckpoint(
           transcript: finalText,
-          alignedWordTexts: checkpoint.speakerTurns.flatMap { $0.words.map(\.text) }
-        ) ? checkpoint : nil
+          speakerProfiles: speakerProfiles
+        ) {
+          finalCheckpoint = refinedCheckpoint
+        }
+      } catch {
+        refinementError = error.localizedDescription
       }
       if let eventHandler {
         await eventHandler(.stopped(MacFinalTranscription(
           text: finalText,
-          attributedText: checkpoint?.text ?? "",
-          speakerTurns: checkpoint?.speakerTurns ?? [],
-          speakerEmbeddings: checkpoint?.speakerEmbeddings ?? [:],
-          speakerProfileIDs: checkpoint?.speakerProfileIDs ?? [:],
-          speakerNames: checkpoint?.speakerNames ?? [:],
-          refinementError: nil
+          attributedText: finalCheckpoint?.text ?? "",
+          speakerTurns: finalCheckpoint?.speakerTurns ?? [],
+          speakerEmbeddings: finalCheckpoint?.speakerEmbeddings ?? [:],
+          speakerProfileIDs: finalCheckpoint?.speakerProfileIDs ?? [:],
+          speakerNames: finalCheckpoint?.speakerNames ?? [:],
+          refinementError: refinementError
         )))
       }
     } else if let eventHandler {
@@ -3359,6 +3382,43 @@ private actor MacTranscriptionEngine {
     isParakeetSessionActive = false
     isWhisperSessionActive = false
     eventHandler = nil
+  }
+
+  private func makeFinalSpeakerCheckpoint(
+    transcript: String,
+    speakerProfiles: [SpeakerProfile]
+  ) async throws -> MacSpeakerCheckpoint? {
+    let cleanedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+    let samples = streamingAudioBuffer.snapshot()
+    guard !cleanedTranscript.isEmpty, !samples.isEmpty else { return nil }
+
+    confirmedTranscriptTimeline.update(
+      text: cleanedTranscript,
+      audioEndTimeMS: streamingAudioBuffer.durationMS(sampleRate: Self.sampleRate)
+    )
+    let timeline = confirmedTranscriptTimeline.snapshot()
+    guard !timeline.chunks.isEmpty else { return nil }
+
+    let diarization = try await speakerPipeline.diarize(samples)
+    let turns = try await speakerPipeline.alignAndMerge(
+      samples: samples,
+      transcript: cleanedTranscript,
+      chunks: timeline.chunks,
+      diarization: diarization.intervals
+    )
+    guard !turns.isEmpty else { return nil }
+
+    let matches = SpeakerProfileMatcher.matches(
+      speakerEmbeddingCandidates: diarization.speakerEmbeddingCandidates,
+      profiles: speakerProfiles
+    )
+    return MacSpeakerCheckpoint(
+      text: cleanedTranscript,
+      speakerTurns: turns,
+      speakerEmbeddings: diarization.speakerEmbeddings,
+      speakerProfileIDs: matches.mapValues(\.profileID),
+      speakerNames: matches.mapValues(\.name)
+    )
   }
 
   private func handleCaptureFailure(_ message: String) async {

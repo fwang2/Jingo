@@ -92,6 +92,20 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertTrue(app.buttons["Stop"].exists)
   }
 
+  func testStoppedRecordingKeepsSpeakerTurnsTimestampsAndFinalTail() {
+    launch(scenario: "stopped-checkpoint-tail")
+
+    XCTAssertFalse(element("transcript.liveText").exists)
+    XCTAssertTrue(element("speaker.speaker-1").label.contains("Feiyi"))
+    XCTAssertEqual(element("speakerTurn.timestamp.0").label, "00:01 – 00:05")
+    XCTAssertEqual(element("speakerTurn.text.0").label, "Welcome to the review.")
+    XCTAssertEqual(
+      element("transcript.liveTail").label,
+      "This final sentence arrived while stopping."
+    )
+    XCTAssertFalse(app.buttons["Stop"].exists)
+  }
+
   func testSingleSpeakerFinalTranscriptAndRename() {
     launch(scenario: "single-speaker")
 

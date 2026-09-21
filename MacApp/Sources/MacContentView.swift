@@ -326,14 +326,12 @@ struct MacContentView: View {
   }
 
   private var speakerCheckpointMatchesTranscript: Bool {
-    !controller.isRecording
-      || (!controller.speakerAttributedText.isEmpty
-        && controller.transcript.hasPrefix(controller.speakerAttributedText))
+    !controller.speakerAttributedText.isEmpty
+      && controller.transcript.hasPrefix(controller.speakerAttributedText)
   }
 
   private var liveTranscriptTail: String {
-    guard controller.isRecording,
-          controller.transcript.hasPrefix(controller.speakerAttributedText)
+    guard controller.transcript.hasPrefix(controller.speakerAttributedText)
     else {
       return ""
     }
