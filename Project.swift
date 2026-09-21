@@ -9,6 +9,7 @@ public let appDestinations: Destinations = [.iPhone, .iPad]
 public let devTeam = "8A76N862C8"
 private let personalDevelopmentTeam = "QRCC3F73AC"
 private let personalDevelopmentBundleID = "com.feiyiwang.Jingo.Dev"
+private let iCloudContainerIdentifier = "iCloud.me.igortarasenko.Jingo"
 
 let isAppStore = Environment.isAppStore.getBoolean(default: false)
 let additionalCondition = isAppStore ? "APPSTORE" : ""
@@ -57,7 +58,7 @@ var appInfoPlist: [String: Plist.Value] = [
     "$(PRODUCT_BUNDLE_IDENTIFIER)",
   ],
   "NSUbiquitousContainers": [
-    "iCloud.me.igortarasenko.whisperboard": [
+    iCloudContainerIdentifier: [
       "NSUbiquitousContainerIsDocumentScopePublic": true,
       "NSUbiquitousContainerName": "Jingo",
       "NSUbiquitousContainerSupportedFolderLevels": "Any",
@@ -69,6 +70,14 @@ if !isAppStore {
   appInfoPlist["NSLocalNetworkUsageDescription"] = Plist.Value.string("Network usage required for debugging purposes")
   appInfoPlist["NSBonjourServices"] = [Plist.Value.string("_pulse._tcp")]
 }
+
+let macInfoPlist: [String: Plist.Value] = [
+  "CFBundleDisplayName": "Jingo",
+  "CFBundleShortVersionString": Plist.Value(stringLiteral: version),
+  "LSApplicationCategoryType": "public.app-category.productivity",
+  "NSMicrophoneUsageDescription": "Jingo uses the microphone for offline live transcription.",
+  "NSScreenCaptureUsageDescription": "Jingo captures audio played by this Mac for local meeting recording and transcription.",
+]
 
 let storeKitScheme: Scheme = .scheme(
   name: "Jingo",
@@ -166,6 +175,75 @@ func createAppTarget(suffix: String = "", isDev: Bool = false, scripts: [TargetS
   )
 }
 
+let macTargets: [Target] = [
+  .target(
+    name: "JingoMac",
+    destinations: [.mac],
+    product: .app,
+    bundleId: "com.feiyiwang.Jingo",
+    deploymentTargets: .macOS("14.0"),
+    infoPlist: .extendingDefault(with: macInfoPlist),
+    sources: [
+      "MacApp/Sources/**",
+      "Sources/AudioProcessing/QwenStreamingTextCleaner.swift",
+      "Sources/SharedTranscription/**",
+    ],
+    dependencies: [
+      .external(name: "FluidAudio"),
+      .external(name: "HuggingFace"),
+      .external(name: "MLX"),
+      .external(name: "MLXAudioCore"),
+      .external(name: "MLXAudioSTT"),
+      .external(name: "MLXHuggingFace"),
+      .external(name: "MLXLLM"),
+      .external(name: "MLXLMCommon"),
+      .external(name: "Tokenizers"),
+      .target(name: "MeetingSummaryCore"),
+    ],
+    settings: .settings(
+      base: [
+        "CODE_SIGN_IDENTITY": "-",
+        "CODE_SIGNING_REQUIRED": "YES",
+        "CODE_SIGN_STYLE": "Manual",
+        "DEVELOPMENT_TEAM": "",
+        "MARKETING_VERSION": SettingValue(stringLiteral: version),
+        "OTHER_LDFLAGS": "$(inherited) -lc++",
+        "PRODUCT_NAME": "Jingo",
+      ]
+    )
+  ),
+  .target(
+    name: "JingoMacTests",
+    destinations: [.mac],
+    product: .unitTests,
+    bundleId: "com.feiyiwang.Jingo.MacTests",
+    deploymentTargets: .macOS("14.0"),
+    infoPlist: .default,
+    sources: [
+      "Tests/MacAppTests/**",
+      "MacApp/Sources/MacAudioCapture.swift",
+      "MacApp/Sources/MacICloudSettings.swift",
+      "MacApp/Sources/MacMeetingDetector.swift",
+      "MacApp/Sources/MacRecordingBackup.swift",
+      "MacApp/Sources/MacRecordingRestore.swift",
+      "MacApp/Sources/MacSyncFolderAccess.swift",
+    ],
+    dependencies: []
+  ),
+  .target(
+    name: "JingoMacUITests",
+    destinations: [.mac],
+    product: .uiTests,
+    bundleId: "com.feiyiwang.Jingo.MacUITests",
+    deploymentTargets: .macOS("14.0"),
+    infoPlist: .default,
+    sources: "Tests/MacAppUITests/**",
+    dependencies: [
+      .target(name: "JingoMac"),
+    ]
+  ),
+]
+
 let project = Project(
   name: "Jingo",
 
@@ -248,76 +326,8 @@ let project = Project(
         ),
       ])
 
+    + macTargets
     + [
-      // MARK: - macOS App
-
-      .target(
-        name: "JingoMac",
-        destinations: [.mac],
-        product: .app,
-        bundleId: "com.feiyiwang.Jingo",
-        deploymentTargets: .macOS("14.0"),
-        infoPlist: .extendingDefault(with: [
-          "CFBundleDisplayName": "Jingo",
-          "CFBundleShortVersionString": Plist.Value(stringLiteral: version),
-          "LSApplicationCategoryType": "public.app-category.productivity",
-          "NSMicrophoneUsageDescription": "Jingo uses the microphone for offline live transcription.",
-          "NSScreenCaptureUsageDescription": "Jingo captures audio played by this Mac for local meeting recording and transcription.",
-        ]),
-        sources: [
-          "MacApp/Sources/**",
-          "Sources/AudioProcessing/QwenStreamingTextCleaner.swift",
-          "Sources/SharedTranscription/**",
-        ],
-        dependencies: [
-          .external(name: "FluidAudio"),
-          .external(name: "HuggingFace"),
-          .external(name: "MLX"),
-          .external(name: "MLXAudioCore"),
-          .external(name: "MLXAudioSTT"),
-          .external(name: "MLXHuggingFace"),
-          .external(name: "MLXLLM"),
-          .external(name: "MLXLMCommon"),
-          .external(name: "Tokenizers"),
-          .target(name: "MeetingSummaryCore"),
-        ],
-        settings: .settings(
-          base: [
-            "CODE_SIGN_STYLE": "Automatic",
-            "DEVELOPMENT_TEAM": SettingValue(stringLiteral: personalDevelopmentTeam),
-            "MARKETING_VERSION": SettingValue(stringLiteral: version),
-            "OTHER_LDFLAGS": "$(inherited) -lc++",
-            "PRODUCT_NAME": "Jingo",
-          ]
-        )
-      ),
-      .target(
-        name: "JingoMacTests",
-        destinations: [.mac],
-        product: .unitTests,
-        bundleId: "com.feiyiwang.Jingo.MacTests",
-        deploymentTargets: .macOS("14.0"),
-        infoPlist: .default,
-        sources: [
-          "Tests/MacAppTests/**",
-          "MacApp/Sources/MacAudioCapture.swift",
-          "MacApp/Sources/MacMeetingDetector.swift",
-        ],
-        dependencies: []
-      ),
-      .target(
-        name: "JingoMacUITests",
-        destinations: [.mac],
-        product: .uiTests,
-        bundleId: "com.feiyiwang.Jingo.MacUITests",
-        deploymentTargets: .macOS("14.0"),
-        infoPlist: .default,
-        sources: "Tests/MacAppUITests/**",
-        dependencies: [
-          .target(name: "JingoMac"),
-        ]
-      ),
-
       // MARK: - ShareExtension
 
       .target(

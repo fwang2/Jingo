@@ -5,6 +5,7 @@ import SwiftUI
 // MARK: - MacContentView
 
 struct MacContentView: View {
+  @Environment(\.scenePhase) private var scenePhase
   @StateObject private var controller = MacTranscriptionController()
   @State private var expandedRecordingIDs: Set<UUID> = []
   @State private var profileToForget: SpeakerProfile?
@@ -35,6 +36,13 @@ struct MacContentView: View {
     .background(Color(nsColor: .windowBackgroundColor))
     .task {
       controller.prepareModelIfNeeded()
+      controller.startSyncFolderSettings()
+    }
+    .onChange(of: scenePhase) { _, newValue in
+      guard newValue == .active else {
+        return
+      }
+      controller.refreshSyncFolderIfNeeded()
     }
     .alert("Jingo Error", isPresented: errorIsPresented) {
       Button("OK") { controller.errorMessage = nil }
@@ -129,7 +137,7 @@ struct MacContentView: View {
       Spacer()
 
       VStack(spacing: 4) {
-        sidebarButton("Account", systemImage: "person.crop.circle", section: .account)
+        sidebarButton("Backup & Restore", systemImage: "externaldrive", section: .account)
         sidebarButton("Settings", systemImage: "gearshape", section: .settings)
 
         HStack(spacing: 7) {
@@ -1096,38 +1104,286 @@ struct MacContentView: View {
   private var account: some View {
     VStack(spacing: 0) {
       pageHeader(
-        title: "Account",
+        title: "Backup & Restore",
         subtitle: "Backup and synchronization"
       )
 
       Divider()
 
       ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
-          Label("iCloud Backup", systemImage: "icloud")
-            .font(.title3.weight(.semibold))
-            .accessibilityIdentifier("account.iCloudBackup")
+        VStack(alignment: .leading, spacing: 20) {
+          VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+              ZStack(alignment: .bottomTrailing) {
+                Image(systemName: "folder.fill")
+                  .font(.system(size: 30))
+                  .foregroundStyle(
+                    controller.syncFolderStatus.isAvailable ? Color.accentColor : Color.secondary
+                  )
 
-          Text("Coming later")
-            .font(.headline)
+                if controller.syncFolderStatus.isAvailable {
+                  Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14, weight: .bold))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, .green)
+                    .background(Circle().fill(Color.green))
+                    .offset(x: 3, y: 3)
+                }
+              }
+              .frame(width: 38, height: 34)
+              .accessibilityHidden(true)
 
-          Text("A future update will back up settings and recordings to your iCloud account.")
+              VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                  Text(controller.syncFolderStatus.title)
+                    .font(.headline)
+                    .accessibilityIdentifier("account.syncFolderStatus")
+
+                  if controller.syncFolderStatus.isAvailable {
+                    Text("CONNECTED")
+                      .font(.caption2.weight(.bold))
+                      .foregroundStyle(.green)
+                      .padding(.horizontal, 7)
+                      .padding(.vertical, 3)
+                      .background(Color.green.opacity(0.12), in: Capsule())
+                      .accessibilityLabel("Connected")
+                      .accessibilityIdentifier("account.syncFolderConnected")
+                  }
+                }
+
+                Text(controller.syncFolderStatus.detail)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                  .textSelection(.enabled)
+              }
+
+              Spacer()
+
+              if controller.isSyncSettingsSyncing {
+                ProgressView()
+                  .controlSize(.small)
+                  .accessibilityLabel("Syncing settings")
+              }
+            }
+
+            Button(
+              controller.syncFolderStatus.isAvailable ? "Change Cloud Location" : "Choose Cloud Location",
+              systemImage: "folder.fill"
+            ) {
+              controller.chooseSyncFolder()
+            }
+            .accessibilityIdentifier("account.chooseSyncFolder")
+
+            Text(controller.syncFolderStatus.guidance)
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+          }
+          .padding(20)
+          .background {
+            RoundedRectangle(cornerRadius: 12)
+              .fill(Color(nsColor: .textBackgroundColor))
+              .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                  .stroke(
+                    controller.syncFolderStatus.isAvailable
+                      ? Color.green.opacity(0.45)
+                      : Color.clear,
+                    lineWidth: 1
+                  )
+              }
+          }
+
+          VStack(alignment: .leading, spacing: 14) {
+            Label("Settings", systemImage: "gearshape.2")
+              .font(.title3.weight(.semibold))
+              .accessibilityIdentifier("account.syncSettings")
+
+            Text("Settings sync automatically through the chosen cloud-synced shared folder.")
+              .foregroundStyle(.secondary)
+
+            Label(controller.syncSettingsStatusText, systemImage: "arrow.triangle.2.circlepath")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          .padding(20)
+          .background(
+            Color(nsColor: .textBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 12)
+          )
+
+          VStack(alignment: .leading, spacing: 14) {
+            Label("Recording Backup", systemImage: "icloud.and.arrow.up")
+              .font(.title3.weight(.semibold))
+              .accessibilityIdentifier("account.recordingBackup")
+
+            Text(
+              "Save recording audio, transcripts, speaker details, and summaries to the chosen "
+                + "cloud-synced shared folder."
+            )
             .foregroundStyle(.secondary)
 
-          Label(
-            "Local recordings remain unchanged until backup is available.",
-            systemImage: "internaldrive"
+            Toggle("Automatically back up recording changes", isOn: $controller.automaticRecordingBackupEnabled)
+              .toggleStyle(.switch)
+              .accessibilityIdentifier("account.automaticRecordingBackup")
+
+            HStack(spacing: 7) {
+              if controller.isAutomaticRecordingBackupRunning {
+                ProgressView()
+                  .controlSize(.small)
+              }
+              Label(
+                controller.automaticRecordingBackupStatusText,
+                systemImage: controller.automaticRecordingBackupEnabled
+                  ? "arrow.triangle.2.circlepath.icloud"
+                  : "pause.circle"
+              )
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("account.automaticRecordingBackupStatus")
+            }
+
+            if controller.isRecordingBackupInProgress {
+              ProgressView(value: controller.recordingBackupProgress)
+                .accessibilityLabel("Recording backup progress")
+            }
+
+            HStack(spacing: 12) {
+              Button("Back Up Now", systemImage: "icloud.and.arrow.up") {
+                controller.backUpRecordings()
+              }
+              .disabled(
+                controller.isRecordingBackupInProgress
+                  || controller.isAutomaticRecordingBackupRunning
+                  || !controller.syncFolderStatus.isAvailable
+                  || controller.recordings.isEmpty
+              )
+              .accessibilityIdentifier("account.backUpNow")
+
+              Text(
+                controller.recordings.isEmpty
+                  ? "No recordings on this Mac"
+                  : "\(controller.recordings.count) recording\(controller.recordings.count == 1 ? "" : "s")"
+              )
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            }
+
+            Label(controller.recordingBackupStatusText, systemImage: "clock.arrow.circlepath")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("account.recordingBackupStatus")
+
+            Text("Automatic backup is off by default. Local recordings are never removed or changed.")
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+          }
+          .padding(20)
+          .background(
+            Color(nsColor: .textBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 12)
           )
-          .font(.caption)
-          .foregroundStyle(.secondary)
+
+          VStack(alignment: .leading, spacing: 14) {
+            HStack {
+              Label("Restore Recordings", systemImage: "icloud.and.arrow.down")
+                .font(.title3.weight(.semibold))
+                .accessibilityIdentifier("account.recordingRestore")
+
+              Spacer()
+
+              Button("Refresh", systemImage: "arrow.clockwise") {
+                controller.refreshSyncFolderRecordingBackups()
+              }
+              .disabled(
+                controller.isSyncFolderBackupsLoading
+                  || controller.isRecordingRestoreInProgress
+                  || controller.isAutomaticRecordingBackupRunning
+                  || !controller.syncFolderStatus.isAvailable
+              )
+              .accessibilityIdentifier("account.refreshBackups")
+
+              Button("Restore All", systemImage: "square.and.arrow.down") {
+                controller.restoreAllRecordings()
+              }
+              .disabled(
+                controller.isRecordingRestoreInProgress
+                  || controller.isAutomaticRecordingBackupRunning
+                  || controller.isRecordingBackupInProgress
+                  || controller.syncFolderRecordingBackups.isEmpty
+                  || controller.syncFolderRecordingBackups.allSatisfy {
+                    controller.isRecordingStoredLocally($0.recordingID)
+                  }
+              )
+              .accessibilityIdentifier("account.restoreAll")
+            }
+
+            if controller.isSyncFolderBackupsLoading {
+              ProgressView("Loading backups…")
+                .controlSize(.small)
+            } else if controller.isRecordingRestoreInProgress {
+              ProgressView(value: controller.recordingRestoreProgress)
+                .accessibilityLabel("Recording restore progress")
+            }
+
+            Label(controller.recordingRestoreStatusText, systemImage: "externaldrive.badge.icloud")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("account.recordingRestoreStatus")
+
+            if !controller.syncFolderRecordingBackups.isEmpty {
+              Divider()
+
+              ForEach(controller.syncFolderRecordingBackups) { backup in
+                HStack(spacing: 12) {
+                  Image(systemName: "waveform")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22)
+
+                  VStack(alignment: .leading, spacing: 3) {
+                    Text(backup.createdAt.formatted(date: .abbreviated, time: .shortened))
+                      .font(.subheadline.weight(.medium))
+                    Text(
+                      "\(ByteCountFormatter.string(fromByteCount: backup.audioByteCount, countStyle: .file)) · "
+                        + "Backed up \(backup.exportedAt.formatted(date: .abbreviated, time: .shortened))"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                  }
+
+                  Spacer()
+
+                  if controller.isRecordingStoredLocally(backup.recordingID) {
+                    Label("On this Mac", systemImage: "checkmark.circle.fill")
+                      .font(.caption)
+                      .foregroundStyle(.green)
+                  } else {
+                    Button("Restore") {
+                      controller.restoreRecording(backup)
+                    }
+                    .disabled(
+                      controller.isRecordingRestoreInProgress
+                        || controller.isAutomaticRecordingBackupRunning
+                        || controller.isRecordingBackupInProgress
+                    )
+                    .accessibilityIdentifier("account.restore.\(backup.recordingID.uuidString)")
+                  }
+                }
+                .padding(.vertical, 3)
+              }
+            }
+
+            Text("Restore verifies every backup and skips recordings already stored on this Mac.")
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+          }
+          .padding(20)
+          .background(
+            Color(nsColor: .textBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 12)
+          )
         }
-        .padding(24)
         .frame(maxWidth: 560, alignment: .leading)
         .frame(maxWidth: .infinity)
-        .background(
-          Color(nsColor: .textBackgroundColor),
-          in: RoundedRectangle(cornerRadius: 12)
-        )
         .padding(28)
       }
       .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))

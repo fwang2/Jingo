@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Combine
 import Foundation
@@ -377,6 +378,7 @@ final class MacTranscriptionController: ObservableObject {
   @Published var isLiveTranscriptionEnabled: Bool {
     didSet {
       UserDefaults.standard.set(isLiveTranscriptionEnabled, forKey: Self.liveTranscriptionDefaultsKey)
+      recordSyncSettingsChange()
       if isLiveTranscriptionEnabled {
         prepareModelIfNeeded()
       }
@@ -386,6 +388,7 @@ final class MacTranscriptionController: ObservableObject {
   @Published var transcriptFontSize: Double {
     didSet {
       UserDefaults.standard.set(transcriptFontSize, forKey: Self.transcriptFontSizeDefaultsKey)
+      recordSyncSettingsChange()
     }
   }
 
@@ -395,6 +398,23 @@ final class MacTranscriptionController: ObservableObject {
         automaticSummariesEnabled,
         forKey: Self.automaticSummariesDefaultsKey
       )
+      recordSyncSettingsChange()
+    }
+  }
+
+  @Published var automaticRecordingBackupEnabled: Bool {
+    didSet {
+      UserDefaults.standard.set(
+        automaticRecordingBackupEnabled,
+        forKey: Self.automaticRecordingBackupDefaultsKey
+      )
+      recordSyncSettingsChange()
+      guard !isApplyingSyncSettings else { return }
+      if automaticRecordingBackupEnabled {
+        scheduleAutomaticRecordingBackup(recordingIDs: Set(recordings.map(\.id)))
+      } else {
+        stopAutomaticRecordingBackup()
+      }
     }
   }
 
@@ -404,8 +424,24 @@ final class MacTranscriptionController: ObservableObject {
         customSummaryInstructions,
         forKey: Self.customSummaryInstructionsDefaultsKey
       )
+      recordSyncSettingsChange()
     }
   }
+
+  @Published private(set) var syncFolderStatus = MacSyncFolderStatus.checking
+  @Published private(set) var syncSettingsStatusText = "Choose a sync folder"
+  @Published private(set) var isSyncSettingsSyncing = false
+  @Published private(set) var isRecordingBackupInProgress = false
+  @Published private(set) var recordingBackupProgress = 0.0
+  @Published private(set) var recordingBackupStatusText = "Not backed up"
+  @Published private(set) var lastRecordingBackupAt: Date?
+  @Published private(set) var isAutomaticRecordingBackupRunning = false
+  @Published private(set) var automaticRecordingBackupStatusText = "Off"
+  @Published private(set) var syncFolderRecordingBackups: [MacRecordingBackupItem] = []
+  @Published private(set) var isSyncFolderBackupsLoading = false
+  @Published private(set) var isRecordingRestoreInProgress = false
+  @Published private(set) var recordingRestoreProgress = 0.0
+  @Published private(set) var recordingRestoreStatusText = "Load backups to restore recordings"
 
   @Published private(set) var isPreparingSummaryModel = false
   @Published private(set) var isSummaryModelReady = false
@@ -422,12 +458,19 @@ final class MacTranscriptionController: ObservableObject {
   private static let audioSourceModeDefaultsKey = "mac.audioSourceMode"
   private static let transcriptFontSizeDefaultsKey = "mac.transcriptFontSize"
   private static let automaticSummariesDefaultsKey = "mac.automaticSummariesEnabled"
+  private static let automaticRecordingBackupDefaultsKey = "mac.automaticRecordingBackupEnabled"
   private static let customSummaryInstructionsDefaultsKey = "mac.customSummaryInstructions"
+  private static let syncSettingsCacheDefaultsKey = "mac.iCloudSettingsCache"
+  private static let syncDeviceIDDefaultsKey = "mac.iCloudDeviceID"
+  private static let lastRecordingBackupDefaultsKey = "mac.lastRecordingBackupAt"
   private static let defaultTranscriptFontSize = 14.0
 
   private let engine = MacTranscriptionEngine()
   private let meetingSummarizer = MacMeetingSummarizer()
   private let recordingStore: MacRecordingStore
+  private let syncFolderAccess: MacSyncFolderAccess
+  private let syncSettingsStore: any MacSyncSettingsStoring
+  private let recordingBackupStore: any MacRecordingBackupStoring
   private let speakerSampleRecorder = MacSpeakerSampleRecorder()
   private var speakerEmbeddings: [String: [Float]] = [:]
   private var speakerProfileIDs: [String: UUID] = [:]
@@ -440,11 +483,23 @@ final class MacTranscriptionController: ObservableObject {
   private var summaryPreparationTask: Task<Void, Never>?
   private var summaryTasks: [UUID: Task<Void, Never>] = [:]
   private var summaryTaskTokens: [UUID: UUID] = [:]
+  private var syncSettingsTask: Task<Void, Never>?
+  private var recordingBackupTask: Task<Void, Never>?
+  private var automaticRecordingBackupTask: Task<Void, Never>?
+  private var automaticRecordingBackupTaskToken: UUID?
+  private var pendingAutomaticBackupRecordingIDs: Set<UUID> = []
+  private var syncFolderBackupCatalogTask: Task<Void, Never>?
+  private var recordingRestoreTask: Task<Void, Never>?
+  private var isApplyingSyncSettings = false
   private var activeRecording: MacRecording?
   private var displayedRecordingID: UUID?
   private var recordingStartedAt: Date?
 
-  init() {
+  init(
+    syncFolderAccess: MacSyncFolderAccess? = nil,
+    syncSettingsStore: (any MacSyncSettingsStoring)? = nil,
+    recordingBackupStore: (any MacRecordingBackupStoring)? = nil
+  ) {
     let uiTestScenario = ProcessInfo.processInfo.environment["JINGO_UI_TEST_SCENARIO"]
     let recordingStore = MacRecordingStore(
       directory: uiTestScenario.map { _ in
@@ -452,7 +507,15 @@ final class MacTranscriptionController: ObservableObject {
           .appendingPathComponent("Jingo-Mac-UI-Tests-(ProcessInfo.processInfo.processIdentifier)")
       }
     )
+    let syncFolderAccess = syncFolderAccess ?? MacSyncFolderAccess()
     self.recordingStore = recordingStore
+    self.syncFolderAccess = syncFolderAccess
+    self.syncSettingsStore = syncSettingsStore ?? MacSyncSettingsStore(
+      folderURLProvider: { syncFolderAccess.selectedFolderURL() }
+    )
+    self.recordingBackupStore = recordingBackupStore ?? MacRecordingBackupStore(
+      folderURLProvider: { syncFolderAccess.selectedFolderURL() }
+    )
     recordings = uiTestScenario == nil
       ? Self.markInterruptedSummaries(in: recordingStore.load())
       : []
@@ -467,6 +530,9 @@ final class MacTranscriptionController: ObservableObject {
     automaticSummariesEnabled = uiTestScenario == nil
       ? UserDefaults.standard.object(forKey: Self.automaticSummariesDefaultsKey) as? Bool ?? true
       : false
+    automaticRecordingBackupEnabled = uiTestScenario == nil
+      ? UserDefaults.standard.object(forKey: Self.automaticRecordingBackupDefaultsKey) as? Bool ?? false
+      : false
     customSummaryInstructions = uiTestScenario == nil
       ? UserDefaults.standard.string(forKey: Self.customSummaryInstructionsDefaultsKey)
         ?? MacMeetingSummarizer.defaultCustomInstructions
@@ -480,10 +546,594 @@ final class MacTranscriptionController: ObservableObject {
         Self.transcriptFontSizeRange.upperBound
       )
       : Self.defaultTranscriptFontSize
+    lastRecordingBackupAt = uiTestScenario == nil
+      ? UserDefaults.standard.object(forKey: Self.lastRecordingBackupDefaultsKey) as? Date
+      : nil
+    if let lastRecordingBackupAt {
+      recordingBackupStatusText = "Last backed up \(lastRecordingBackupAt.formatted())"
+    }
+    automaticRecordingBackupStatusText = automaticRecordingBackupEnabled
+      ? "Waiting for changes"
+      : "Off"
+    syncFolderStatus = uiTestScenario == nil
+      ? syncFolderAccess.status()
+      : .available(
+        FileManager.default.temporaryDirectory.appendingPathComponent("Jingo")
+      )
+    syncSettingsStatusText = syncFolderStatus.isAvailable
+      ? "Settings synced"
+      : "Settings remain saved on this Mac"
 
     if let uiTestScenario {
       configureUITestScenario(uiTestScenario)
     }
+  }
+
+  func startSyncFolderSettings() {
+    guard ProcessInfo.processInfo.environment["JINGO_UI_TEST_SCENARIO"] == nil else {
+      syncFolderStatus = .available(
+        FileManager.default.temporaryDirectory.appendingPathComponent("Jingo")
+      )
+      syncSettingsStatusText = "Settings synced"
+      return
+    }
+    scheduleSyncSettings(delay: nil)
+    if automaticRecordingBackupEnabled {
+      scheduleAutomaticRecordingBackup(recordingIDs: Set(recordings.map(\.id)))
+    }
+  }
+
+  func refreshSyncFolderIfNeeded() {
+    guard ProcessInfo.processInfo.environment["JINGO_UI_TEST_SCENARIO"] == nil else {
+      return
+    }
+    scheduleSyncSettings(delay: nil)
+  }
+
+  func chooseSyncFolder() {
+    do {
+      guard try syncFolderAccess.chooseFolder() != nil else {
+        return
+      }
+      syncFolderStatus = syncFolderAccess.status()
+      syncSettingsStatusText = "Syncing settings…"
+      syncFolderRecordingBackups = []
+      recordingRestoreStatusText = "Loading backups…"
+      scheduleSyncSettings(delay: nil)
+      if automaticRecordingBackupEnabled {
+        scheduleAutomaticRecordingBackup(recordingIDs: Set(recordings.map(\.id)))
+      }
+    } catch {
+      errorMessage = "Jingo could not remember the selected folder: \(error.localizedDescription)"
+    }
+  }
+
+  func backUpRecordings() {
+    guard !isRecordingBackupInProgress, !isAutomaticRecordingBackupRunning else { return }
+    guard syncFolderStatus.isAvailable else {
+      errorMessage = "Choose an available sync folder before backing up recordings."
+      return
+    }
+    guard !recordings.isEmpty else {
+      recordingBackupStatusText = "No recordings to back up"
+      return
+    }
+
+    let sources: [MacRecordingBackupSource]
+    do {
+      sources = try recordingBackupSources(from: recordings)
+    } catch {
+      recordingBackupStatusText = "Backup could not start"
+      errorMessage = "Jingo could not prepare the recording metadata: \(error.localizedDescription)"
+      return
+    }
+
+    isRecordingBackupInProgress = true
+    recordingBackupProgress = 0
+    recordingBackupStatusText = "Preparing backup…"
+    recordingBackupTask = Task { [weak self] in
+      guard let self else { return }
+      defer {
+        isRecordingBackupInProgress = false
+        recordingBackupTask = nil
+      }
+
+      do {
+        let report = try await recordingBackupStore.backUp(sources) { progress in
+          await self.updateRecordingBackupProgress(progress)
+        }
+        try Task.checkCancellation()
+
+        let completedAt = Date()
+        if report.failures.isEmpty {
+          lastRecordingBackupAt = completedAt
+          UserDefaults.standard.set(completedAt, forKey: Self.lastRecordingBackupDefaultsKey)
+          recordingBackupStatusText = Self.recordingBackupCompletionText(report)
+          Task { @MainActor [weak self] in
+            self?.refreshSyncFolderRecordingBackups()
+          }
+        } else {
+          recordingBackupStatusText =
+            "Backup finished with \(report.failures.count) failed recording\(report.failures.count == 1 ? "" : "s")"
+          let failure = report.failures[0]
+          errorMessage = "\(failure.recordingName): \(failure.message)"
+        }
+      } catch is CancellationError {
+        recordingBackupStatusText = "Backup cancelled"
+      } catch {
+        recordingBackupStatusText = "Backup failed"
+        errorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  private static func recordingBackupCompletionText(_ report: MacRecordingBackupReport) -> String {
+    if report.uploadedCount == 0 {
+      return "Backup is up to date (\(report.skippedCount) unchanged)"
+    }
+    if report.skippedCount == 0 {
+      return "Backed up \(report.uploadedCount) recording\(report.uploadedCount == 1 ? "" : "s")"
+    }
+    return "Backed up \(report.uploadedCount); \(report.skippedCount) unchanged"
+  }
+
+  private func recordingBackupSources(
+    from recordings: [MacRecording]
+  ) throws -> [MacRecordingBackupSource] {
+    try recordings.map { recording in
+      let metadata = try MacRecordingBackupJSON.encode(recording)
+      return MacRecordingBackupSource(
+        id: recording.id,
+        createdAt: recording.createdAt,
+        displayName: recording.createdAt.formatted(date: .abbreviated, time: .shortened),
+        originalAudioFileName: recording.fileName,
+        metadata: metadata,
+        audioURL: recordingStore.audioURL(for: recording)
+      )
+    }
+  }
+
+  private func updateRecordingBackupProgress(_ progress: MacRecordingBackupProgress) {
+    recordingBackupProgress = progress.fractionCompleted
+    recordingBackupStatusText =
+      "Backing up \(progress.currentRecordingName)… \(progress.completedCount)/\(progress.totalCount)"
+  }
+
+  private func scheduleAutomaticRecordingBackup(
+    recordingIDs: Set<UUID>,
+    delay: Duration = .seconds(2)
+  ) {
+    guard automaticRecordingBackupEnabled,
+          ProcessInfo.processInfo.environment["JINGO_UI_TEST_SCENARIO"] == nil
+    else {
+      return
+    }
+    pendingAutomaticBackupRecordingIDs.formUnion(recordingIDs)
+    guard !pendingAutomaticBackupRecordingIDs.isEmpty else { return }
+    if isAutomaticRecordingBackupRunning {
+      automaticRecordingBackupStatusText = "Additional changes queued"
+      return
+    }
+
+    automaticRecordingBackupTask?.cancel()
+    let token = UUID()
+    automaticRecordingBackupTaskToken = token
+    automaticRecordingBackupStatusText = syncFolderStatus.isAvailable
+      ? "Changes queued"
+      : "Waiting for sync folder"
+    automaticRecordingBackupTask = Task { [weak self] in
+      do {
+        try await Task.sleep(for: delay)
+        guard !Task.isCancelled, let self,
+              automaticRecordingBackupTaskToken == token
+        else {
+          return
+        }
+        let followUpDelay = await performAutomaticRecordingBackup()
+        guard automaticRecordingBackupTaskToken == token else { return }
+        automaticRecordingBackupTask = nil
+        automaticRecordingBackupTaskToken = nil
+        if let followUpDelay,
+           automaticRecordingBackupEnabled,
+           !pendingAutomaticBackupRecordingIDs.isEmpty {
+          scheduleAutomaticRecordingBackup(recordingIDs: [], delay: followUpDelay)
+        }
+      } catch is CancellationError {
+        return
+      } catch {
+        self?.automaticRecordingBackupStatusText = "Automatic backup failed"
+      }
+    }
+  }
+
+  private func performAutomaticRecordingBackup() async -> Duration? {
+    guard automaticRecordingBackupEnabled else { return nil }
+    guard syncFolderStatus.isAvailable else {
+      automaticRecordingBackupStatusText = "Waiting for sync folder"
+      return nil
+    }
+    guard !isRecording,
+          !isRecordingBackupInProgress,
+          !isRecordingRestoreInProgress
+    else {
+      automaticRecordingBackupStatusText = "Waiting for Jingo to become idle"
+      return .seconds(5)
+    }
+
+    let recordingIDs = pendingAutomaticBackupRecordingIDs
+    let changedRecordings = recordings.filter { recordingIDs.contains($0.id) }
+    guard !changedRecordings.isEmpty else {
+      pendingAutomaticBackupRecordingIDs.subtract(recordingIDs)
+      automaticRecordingBackupStatusText = "Up to date"
+      return nil
+    }
+
+    let sources: [MacRecordingBackupSource]
+    do {
+      sources = try recordingBackupSources(from: changedRecordings)
+    } catch {
+      automaticRecordingBackupStatusText = "Could not prepare automatic backup"
+      return nil
+    }
+
+    pendingAutomaticBackupRecordingIDs.subtract(recordingIDs)
+    isAutomaticRecordingBackupRunning = true
+    automaticRecordingBackupStatusText =
+      "Backing up \(sources.count) changed recording\(sources.count == 1 ? "" : "s")…"
+    defer { isAutomaticRecordingBackupRunning = false }
+
+    do {
+      let report = try await recordingBackupStore.backUp(sources) { _ in }
+      try Task.checkCancellation()
+      let failedIDs = Set(report.failures.map(\.recordingID))
+      pendingAutomaticBackupRecordingIDs.formUnion(failedIDs)
+      if report.failures.isEmpty {
+        let completedAt = Date()
+        lastRecordingBackupAt = completedAt
+        UserDefaults.standard.set(completedAt, forKey: Self.lastRecordingBackupDefaultsKey)
+        automaticRecordingBackupStatusText = "Up to date · \(completedAt.formatted(date: .omitted, time: .shortened))"
+        recordingBackupStatusText = Self.recordingBackupCompletionText(report)
+        refreshSyncFolderRecordingBackups()
+        return pendingAutomaticBackupRecordingIDs.isEmpty ? nil : .seconds(2)
+      }
+      automaticRecordingBackupStatusText =
+        "\(report.failures.count) recording\(report.failures.count == 1 ? "" : "s") need attention"
+      return nil
+    } catch is CancellationError {
+      if automaticRecordingBackupEnabled {
+        pendingAutomaticBackupRecordingIDs.formUnion(recordingIDs)
+      }
+      return nil
+    } catch {
+      pendingAutomaticBackupRecordingIDs.formUnion(recordingIDs)
+      automaticRecordingBackupStatusText = "Automatic backup failed"
+      return nil
+    }
+  }
+
+  private func stopAutomaticRecordingBackup() {
+    automaticRecordingBackupTask?.cancel()
+    automaticRecordingBackupTask = nil
+    automaticRecordingBackupTaskToken = nil
+    pendingAutomaticBackupRecordingIDs.removeAll()
+    isAutomaticRecordingBackupRunning = false
+    automaticRecordingBackupStatusText = "Off"
+  }
+
+  func refreshSyncFolderRecordingBackups() {
+    guard !isSyncFolderBackupsLoading, !isRecordingRestoreInProgress else { return }
+    guard ProcessInfo.processInfo.environment["JINGO_UI_TEST_SCENARIO"] == nil else {
+      recordingRestoreStatusText = "No backups found"
+      return
+    }
+    guard syncFolderStatus.isAvailable else {
+      recordingRestoreStatusText = "Choose a sync folder to load backups"
+      return
+    }
+
+    isSyncFolderBackupsLoading = true
+    recordingRestoreStatusText = "Loading backups…"
+    syncFolderBackupCatalogTask = Task { [weak self] in
+      guard let self else { return }
+      defer {
+        isSyncFolderBackupsLoading = false
+        syncFolderBackupCatalogTask = nil
+      }
+      do {
+        let catalog = try await recordingBackupStore.loadBackups()
+        try Task.checkCancellation()
+        syncFolderRecordingBackups = catalog.items
+        if catalog.items.isEmpty, catalog.failures.isEmpty {
+          recordingRestoreStatusText = "No backups found"
+        } else if catalog.failures.isEmpty {
+          recordingRestoreStatusText =
+            "\(catalog.items.count) backup\(catalog.items.count == 1 ? "" : "s") available"
+        } else {
+          recordingRestoreStatusText =
+            "Loaded \(catalog.items.count); \(catalog.failures.count) invalid backup\(catalog.failures.count == 1 ? "" : "s") ignored"
+          if let failure = catalog.failures.first {
+            errorMessage = "Backup \(failure.packageName): \(failure.message)"
+          }
+        }
+      } catch is CancellationError {
+        return
+      } catch {
+        recordingRestoreStatusText = "Could not load backups"
+        errorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  func restoreRecording(_ item: MacRecordingBackupItem) {
+    startRecordingRestore([item])
+  }
+
+  func restoreAllRecordings() {
+    startRecordingRestore(syncFolderRecordingBackups)
+  }
+
+  func isRecordingStoredLocally(_ recordingID: UUID) -> Bool {
+    recordings.contains { $0.id == recordingID }
+  }
+
+  private func startRecordingRestore(_ items: [MacRecordingBackupItem]) {
+    guard !isRecordingRestoreInProgress,
+          !isRecordingBackupInProgress,
+          !isAutomaticRecordingBackupRunning
+    else {
+      return
+    }
+    guard syncFolderStatus.isAvailable else {
+      errorMessage = "Choose an available sync folder before restoring recordings."
+      return
+    }
+    guard !items.isEmpty else {
+      recordingRestoreStatusText = "No backups to restore"
+      return
+    }
+
+    isRecordingRestoreInProgress = true
+    recordingRestoreProgress = 0
+    recordingRestoreStatusText = "Preparing restore…"
+    recordingRestoreTask = Task { [weak self] in
+      guard let self else { return }
+      defer {
+        isRecordingRestoreInProgress = false
+        recordingRestoreTask = nil
+      }
+
+      var restoredCount = 0
+      var skippedCount = 0
+      var failures: [String] = []
+      for (index, item) in items.enumerated() {
+        if Task.isCancelled {
+          recordingRestoreStatusText = "Restore cancelled"
+          return
+        }
+        recordingRestoreProgress = Double(index) / Double(items.count)
+        recordingRestoreStatusText =
+          "Restoring \(item.createdAt.formatted(date: .abbreviated, time: .shortened))… \(index)/\(items.count)"
+
+        if isRecordingStoredLocally(item.recordingID) {
+          skippedCount += 1
+          continue
+        }
+
+        do {
+          try await restoreRecording(item)
+          restoredCount += 1
+        } catch is CancellationError {
+          recordingRestoreStatusText = "Restore cancelled"
+          return
+        } catch {
+          failures.append(
+            "\(item.createdAt.formatted(date: .abbreviated, time: .shortened)): \(error.localizedDescription)"
+          )
+        }
+      }
+
+      recordingRestoreProgress = 1
+      recordingRestoreStatusText = Self.recordingRestoreCompletionText(
+        restoredCount: restoredCount,
+        skippedCount: skippedCount,
+        failedCount: failures.count
+      )
+      if let firstFailure = failures.first {
+        errorMessage = firstFailure
+      }
+    }
+  }
+
+  private func restoreRecording(_ item: MacRecordingBackupItem) async throws {
+    let preparation = try await recordingBackupStore.prepareRestore(recordingID: item.recordingID)
+    var recording = try MacRecordingBackupJSON.decode(MacRecording.self, from: preparation.metadata)
+    guard recording.id == item.recordingID,
+          recording.fileName == item.originalAudioFileName,
+          recording.createdAt == item.createdAt
+    else {
+      throw MacRecordingBackupError.recordingMetadataMismatch
+    }
+    guard URL(fileURLWithPath: recording.fileName).lastPathComponent == recording.fileName,
+          !recording.fileName.isEmpty
+    else {
+      throw MacRecordingBackupError.unsafeFileName
+    }
+    recording = Self.markInterruptedSummaries(in: [recording])[0]
+    let destinationURL = try recordingStore.restoreDestinationURL(for: recording)
+    try await recordingBackupStore.restoreAudio(from: preparation, to: destinationURL)
+
+    do {
+      var updatedRecordings = recordings
+      updatedRecordings.append(recording)
+      updatedRecordings.sort { $0.createdAt > $1.createdAt }
+      try recordingStore.save(updatedRecordings)
+      recordings = updatedRecordings
+    } catch {
+      try? recordingStore.removeRestoredAudio(at: destinationURL)
+      throw error
+    }
+  }
+
+  private static func recordingRestoreCompletionText(
+    restoredCount: Int,
+    skippedCount: Int,
+    failedCount: Int
+  ) -> String {
+    var parts: [String] = []
+    if restoredCount > 0 {
+      parts.append("\(restoredCount) restored")
+    }
+    if skippedCount > 0 {
+      parts.append("\(skippedCount) already on this Mac")
+    }
+    if failedCount > 0 {
+      parts.append("\(failedCount) failed")
+    }
+    return parts.isEmpty ? "Nothing to restore" : parts.joined(separator: " · ")
+  }
+
+  private func recordSyncSettingsChange() {
+    guard !isApplyingSyncSettings,
+          ProcessInfo.processInfo.environment["JINGO_UI_TEST_SCENARIO"] == nil
+    else {
+      return
+    }
+
+    let settings = currentCloudSettings(markingChangesAt: Date())
+    saveCachedCloudSettings(settings)
+    scheduleSyncSettings(delay: .milliseconds(750))
+  }
+
+  private func scheduleSyncSettings(delay: Duration?) {
+    syncSettingsTask?.cancel()
+    syncSettingsTask = Task { [weak self] in
+      do {
+        if let delay {
+          try await Task.sleep(for: delay)
+        }
+        try Task.checkCancellation()
+        await self?.synchronizeSettings()
+      } catch is CancellationError {
+        return
+      } catch {
+        self?.syncSettingsStatusText = "Settings sync failed"
+        self?.errorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  private func synchronizeSettings() async {
+    isSyncSettingsSyncing = true
+    defer { isSyncSettingsSyncing = false }
+
+    let folderStatus = await syncSettingsStore.folderStatus()
+    guard !Task.isCancelled else {
+      return
+    }
+    syncFolderStatus = folderStatus
+    if folderStatus.isAvailable, automaticRecordingBackupEnabled {
+      scheduleAutomaticRecordingBackup(recordingIDs: [])
+    }
+    if folderStatus.isAvailable, selectedSection == .account {
+      refreshSyncFolderRecordingBackups()
+    }
+    guard folderStatus.isAvailable else {
+      syncSettingsStatusText = "Settings remain saved on this Mac"
+      return
+    }
+
+    do {
+      let localSettings = currentCloudSettings()
+      let remoteSettings = try await syncSettingsStore.loadSettings()
+      try Task.checkCancellation()
+      let mergedSettings = remoteSettings.map(localSettings.merged(with:)) ?? localSettings
+
+      if mergedSettings != remoteSettings {
+        try await syncSettingsStore.saveSettings(mergedSettings)
+      }
+      try Task.checkCancellation()
+
+      saveCachedCloudSettings(mergedSettings)
+      applySyncSettings(mergedSettings)
+      syncSettingsStatusText = "Settings synced"
+    } catch is CancellationError {
+      return
+    } catch {
+      syncSettingsStatusText = "Settings sync failed"
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func currentCloudSettings(markingChangesAt modifiedAt: Date? = nil) -> MacCloudSettings {
+    let deviceID = syncDeviceID()
+    var settings = loadCachedCloudSettings() ?? .legacy(
+      liveTranscriptionEnabled: isLiveTranscriptionEnabled,
+      transcriptFontSize: transcriptFontSize,
+      automaticSummariesEnabled: automaticSummariesEnabled,
+      customSummaryInstructions: customSummaryInstructions,
+      automaticRecordingBackupEnabled: automaticRecordingBackupEnabled,
+      deviceID: deviceID
+    )
+    settings.schemaVersion = MacCloudSettings.currentSchemaVersion
+    guard let modifiedAt else {
+      return settings
+    }
+
+    return settings.updating(
+      liveTranscriptionEnabled: isLiveTranscriptionEnabled,
+      transcriptFontSize: transcriptFontSize,
+      automaticSummariesEnabled: automaticSummariesEnabled,
+      customSummaryInstructions: customSummaryInstructions,
+      automaticRecordingBackupEnabled: automaticRecordingBackupEnabled,
+      modifiedAt: modifiedAt,
+      deviceID: deviceID
+    )
+  }
+
+  private func applySyncSettings(_ settings: MacCloudSettings) {
+    isApplyingSyncSettings = true
+    defer { isApplyingSyncSettings = false }
+    let wasAutomaticRecordingBackupEnabled = automaticRecordingBackupEnabled
+
+    isLiveTranscriptionEnabled = settings.liveTranscriptionEnabled.value
+    transcriptFontSize = min(
+      max(settings.transcriptFontSize.value, Self.transcriptFontSizeRange.lowerBound),
+      Self.transcriptFontSizeRange.upperBound
+    )
+    automaticSummariesEnabled = settings.automaticSummariesEnabled.value
+    customSummaryInstructions = settings.customSummaryInstructions.value
+    automaticRecordingBackupEnabled = settings.automaticRecordingBackupEnabled.value
+    if automaticRecordingBackupEnabled {
+      scheduleAutomaticRecordingBackup(
+        recordingIDs: wasAutomaticRecordingBackupEnabled ? [] : Set(recordings.map(\.id))
+      )
+    } else {
+      stopAutomaticRecordingBackup()
+    }
+  }
+
+  private func loadCachedCloudSettings() -> MacCloudSettings? {
+    guard let data = UserDefaults.standard.data(forKey: Self.syncSettingsCacheDefaultsKey)
+    else {
+      return nil
+    }
+    return try? JSONDecoder().decode(MacCloudSettings.self, from: data)
+  }
+
+  private func saveCachedCloudSettings(_ settings: MacCloudSettings) {
+    guard let data = try? JSONEncoder().encode(settings) else {
+      return
+    }
+    UserDefaults.standard.set(data, forKey: Self.syncSettingsCacheDefaultsKey)
+  }
+
+  private func syncDeviceID() -> String {
+    if let deviceID = UserDefaults.standard.string(forKey: Self.syncDeviceIDDefaultsKey) {
+      return deviceID
+    }
+    let deviceID = UUID().uuidString
+    UserDefaults.standard.set(deviceID, forKey: Self.syncDeviceIDDefaultsKey)
+    return deviceID
   }
 
   private func configureUITestScenario(_ scenario: String) {
@@ -687,6 +1337,9 @@ final class MacTranscriptionController: ObservableObject {
 
   func select(_ section: MacSection) {
     selectedSection = section
+    if section == .account {
+      refreshSyncFolderRecordingBackups()
+    }
   }
 
   func audioButtonTapped() {
@@ -974,18 +1627,30 @@ final class MacTranscriptionController: ObservableObject {
     }
     summary.status = status
     recordings[index].summary = summary
-    saveRecordingsReportingError()
+    let automaticBackupRecordingIDs: Set<UUID> = switch status {
+    case .completed, .failed:
+      [recordingID]
+
+    case .generating, .queued:
+      []
+    }
+    saveRecordingsReportingError(
+      automaticBackupRecordingIDs: automaticBackupRecordingIDs
+    )
   }
 
   private func updateSummary(for recordingID: UUID, summary: MeetingSummary) {
     guard let index = recordings.firstIndex(where: { $0.id == recordingID }) else { return }
     recordings[index].summary = summary
-    saveRecordingsReportingError()
+    saveRecordingsReportingError(automaticBackupRecordingIDs: [recordingID])
   }
 
-  private func saveRecordingsReportingError() {
+  private func saveRecordingsReportingError(
+    automaticBackupRecordingIDs: Set<UUID> = []
+  ) {
     do {
       try recordingStore.save(recordings)
+      scheduleAutomaticRecordingBackup(recordingIDs: automaticBackupRecordingIDs)
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -1075,6 +1740,7 @@ final class MacTranscriptionController: ObservableObject {
     do {
       try recordingStore.save(recordings)
       try recordingStore.saveSpeakerProfiles(speakerProfiles)
+      scheduleAutomaticRecordingBackup(recordingIDs: [targetID])
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -1183,6 +1849,7 @@ final class MacTranscriptionController: ObservableObject {
         to: name,
         profiles: &speakerProfiles
       )
+      var changedRecordingIDs: Set<UUID> = []
       for index in recordings.indices {
         let linkedSpeakerIDs = recordings[index].speakerProfileIDs?
           .filter { $0.value == profileID }
@@ -1193,9 +1860,11 @@ final class MacTranscriptionController: ObservableObject {
           names[speakerID] = updatedName
         }
         recordings[index].speakerNames = names
+        changedRecordingIDs.insert(recordings[index].id)
       }
       refreshDisplayedSpeakerMetadata()
       try saveSpeakerData()
+      scheduleAutomaticRecordingBackup(recordingIDs: changedRecordingIDs)
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -1212,14 +1881,17 @@ final class MacTranscriptionController: ObservableObject {
       return
     }
     speakerProfiles.removeAll { $0.id == profileID }
+    var changedRecordingIDs: Set<UUID> = []
     for index in recordings.indices {
       guard var profileIDs = recordings[index].speakerProfileIDs else { continue }
       profileIDs = profileIDs.filter { $0.value != profileID }
       recordings[index].speakerProfileIDs = profileIDs.isEmpty ? nil : profileIDs
+      changedRecordingIDs.insert(recordings[index].id)
     }
     speakerProfileIDs = speakerProfileIDs.filter { $0.value != profileID }
     do {
       try saveSpeakerData()
+      scheduleAutomaticRecordingBackup(recordingIDs: changedRecordingIDs)
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -1308,6 +1980,7 @@ final class MacTranscriptionController: ObservableObject {
     displayedRecordingID = recording.id
     do {
       try recordingStore.save(recordings)
+      scheduleAutomaticRecordingBackup(recordingIDs: [recording.id])
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -1384,6 +2057,30 @@ private struct MacRecordingStore: Sendable {
 
   func audioURL(for recording: MacRecording) -> URL {
     directory.appendingPathComponent(recording.fileName)
+  }
+
+  func restoreDestinationURL(for recording: MacRecording) throws -> URL {
+    guard !recording.fileName.isEmpty,
+          recording.fileName != ".",
+          recording.fileName != "..",
+          URL(fileURLWithPath: recording.fileName).lastPathComponent == recording.fileName
+    else {
+      throw MacRecordingBackupError.unsafeFileName
+    }
+    let destinationURL = directory.appendingPathComponent(recording.fileName)
+    guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
+      throw MacRecordingBackupError.audioDestinationExists
+    }
+    return destinationURL
+  }
+
+  func removeRestoredAudio(at url: URL) throws {
+    guard url.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL,
+          FileManager.default.fileExists(atPath: url.path)
+    else {
+      return
+    }
+    try FileManager.default.removeItem(at: url)
   }
 
   func save(_ recordings: [MacRecording]) throws {

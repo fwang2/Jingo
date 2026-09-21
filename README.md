@@ -29,6 +29,7 @@
 - Learns known speakers from conversations or dedicated voice samples, then recognizes them in later recordings.
 - Creates structured meeting summaries locally on Mac, including findings, decisions, unresolved items, participant contributions, actions, risks, and meeting status.
 - Keeps recordings, transcripts, voice profiles, and model inference on the device.
+- Optionally backs up Mac settings and recordings through a cloud-synced folder you control.
 - Provides a native Mac workspace alongside the iPhone and iPad experience.
 
 Speaker diarization and speaker identification are different stages: diarization determines *who spoke when* within a recording, while a saved voice profile gives that speaker a persistent name across recordings.
@@ -46,7 +47,7 @@ Both paths use Qwen forced alignment to place words on the timeline and FluidAud
 
 ## Privacy and Model Downloads
 
-Audio and transcripts stay on the device. Jingo downloads its open models the first time they are prepared; after that, transcription and speaker processing run locally. The first run therefore requires internet access and takes longer than subsequent launches.
+Audio and transcripts stay on the device by default. If you configure **Backup & Restore** on Mac, Jingo also writes the selected settings and recording backups to the cloud-synced folder you choose. Jingo downloads its open models the first time they are prepared; after that, transcription and speaker processing run locally. The first run therefore requires internet access and takes longer than subsequent launches.
 
 Known-speaker voice samples are stored locally. A sample needs at least six seconds of clear, single-speaker speech; recording 10–15 seconds is recommended.
 
@@ -65,7 +66,13 @@ Summary detail scales with the recording duration and transcript density. Brief 
 
 The default summary prompt is editable Markdown. Settings provides separate **Edit** and **Preview** tabs, plus an option to restore the bundled default. Factual grounding, the structured result, and adaptive length limits remain enforced even when the prompt is customized.
 
-Summary content and prompt settings remain local. The **Account** page is reserved for a future iCloud backup feature for settings and recordings; it does not currently upload or synchronize data.
+## Backup & Restore on Mac
+
+Jingo can synchronize supported preferences and recording backups through a cloud-synced shared folder. Open **Backup & Restore** and choose a parent location managed by iCloud Drive, Dropbox, Google Drive, OneDrive, or another service that exposes a folder in Finder. Jingo creates and uses a `Jingo` folder inside that location, so you do not need to create it yourself.
+
+The selected location is confirmed once and remembered on that Mac. A connected card shows the active Jingo folder and its full path. This folder-based approach does not require a paid Apple Developer membership or a private iCloud app container.
+
+Recording audio, transcripts, speaker details, and summaries can be backed up and restored manually. Automatic recording backup is opt-in and disabled by default. Backups are incremental; restores verify file integrity, skip recordings already on the Mac, and never overwrite existing local audio.
 
 ## Build and Run
 
