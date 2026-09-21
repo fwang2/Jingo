@@ -22,6 +22,11 @@ struct MacContentView: View {
   @State private var speakerProfileNameDraft = ""
   @State private var transcriptIsNearBottom = true
   @State private var summaryInstructionsTab: SummaryInstructionsTab = .edit
+  #if DEBUG
+    @State private var developerBenchmarkResult: MacDeveloperBenchmarkResult?
+    @State private var developerBenchmarkError: String?
+    @State private var developerReportIsExpanded = false
+  #endif
 
   var body: some View {
     HStack(spacing: 0) {
@@ -182,6 +187,9 @@ struct MacContentView: View {
       Spacer()
 
       VStack(spacing: 4) {
+        #if DEBUG
+          sidebarButton("Developer", systemImage: "hammer", section: .developer)
+        #endif
         sidebarButton("Backup & Restore", systemImage: "externaldrive", section: .account)
         sidebarButton("Settings", systemImage: "gearshape", section: .settings)
 
@@ -215,6 +223,10 @@ struct MacContentView: View {
       account
     case .settings:
       settings
+    #if DEBUG
+      case .developer:
+        developer
+    #endif
     }
   }
 
@@ -1726,13 +1738,8 @@ struct MacContentView: View {
                   .foregroundStyle(Color.accentColor)
                   .frame(width: 28)
 
-                VStack(alignment: .leading, spacing: 3) {
-                  Text(profile.name)
-                    .font(.body.weight(.medium))
-                  Text(sampleCountText(profile.sampleCount))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
+                Text(profile.name)
+                  .font(.body.weight(.medium))
 
                 Spacer()
 
@@ -1789,6 +1796,214 @@ struct MacContentView: View {
       .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
   }
+
+  #if DEBUG
+    private var developer: some View {
+      VStack(spacing: 0) {
+        pageHeader(
+          title: "Developer",
+          subtitle: "Local diagnostics and manual tools"
+        )
+
+        Divider()
+
+        ScrollView {
+          VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 10) {
+              Label("Speaker recognition benchmark", systemImage: "person.wave.2")
+                .font(.headline)
+
+              Text(
+                "Replay manually confirmed speakers from saved meetings and compare the previous "
+                  + "voice average with the current voice-sample bank. Nothing is changed."
+              )
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+
+              HStack(spacing: 12) {
+                Button("Run benchmark", systemImage: "play.fill") {
+                  runDeveloperBenchmark()
+                }
+                .accessibilityIdentifier("developer.benchmark.run")
+
+                Text(developerBenchmarkInputDescription)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+              }
+            }
+            .padding(20)
+            .background(
+              Color(nsColor: .textBackgroundColor),
+              in: RoundedRectangle(cornerRadius: 12)
+            )
+
+            if let developerBenchmarkError {
+              Label(developerBenchmarkError, systemImage: "exclamationmark.triangle.fill")
+                .font(.subheadline)
+                .foregroundStyle(.orange)
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                .accessibilityIdentifier("developer.benchmark.error")
+            }
+
+            if let result = developerBenchmarkResult {
+              developerBenchmarkResults(result)
+            }
+          }
+          .frame(maxWidth: 720, alignment: .leading)
+          .frame(maxWidth: .infinity)
+          .padding(28)
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+      }
+    }
+
+    private var developerBenchmarkInputDescription: String {
+      let count = MacDeveloperBenchmark.confirmedSampleCount(in: controller.recordings)
+      return count == 1 ? "1 confirmed sample available" : "\(count) confirmed samples available"
+    }
+
+    private func developerBenchmarkResults(
+      _ result: MacDeveloperBenchmarkResult
+    ) -> some View {
+      VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("Latest result")
+            .font(.headline)
+          Text(result.scopeDescription)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
+        HStack(spacing: 10) {
+          Button("Export Dataset…") {
+            exportDeveloperBenchmark(
+              result.datasetData,
+              suggestedName: "speaker-profile-benchmark-dataset.json",
+              contentType: "json"
+            )
+          }
+          .accessibilityIdentifier("developer.benchmark.exportDataset")
+
+          Button("Export Report…") {
+            exportDeveloperBenchmark(
+              Data(result.reportText.utf8),
+              suggestedName: "speaker-profile-benchmark.md",
+              contentType: "md"
+            )
+          }
+          .accessibilityIdentifier("developer.benchmark.exportReport")
+
+          Spacer()
+        }
+
+        HStack(spacing: 12) {
+          developerMetric(
+            title: "Known speaker ID",
+            before: result.legacyKnownIdentificationRate,
+            after: result.bankKnownIdentificationRate,
+            lowerIsBetter: false
+          )
+          developerMetric(
+            title: "Wrong name",
+            before: result.legacyMisidentificationRate,
+            after: result.bankMisidentificationRate,
+            lowerIsBetter: true
+          )
+          developerMetric(
+            title: "False accept",
+            before: result.legacyFalseAcceptanceRate,
+            after: result.bankFalseAcceptanceRate,
+            lowerIsBetter: true
+          )
+        }
+
+        if result.knownTrials == 0 {
+          Text("More than one confirmed meeting per speaker is needed to measure repeat recognition.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
+        DisclosureGroup("Full report", isExpanded: $developerReportIsExpanded) {
+          ScrollView(.horizontal) {
+            Text(result.reportText)
+              .font(.system(.caption, design: .monospaced))
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.top, 10)
+          }
+        }
+        .accessibilityIdentifier("developer.benchmark.report")
+      }
+      .padding(20)
+      .background(
+        Color(nsColor: .textBackgroundColor),
+        in: RoundedRectangle(cornerRadius: 12)
+      )
+      .accessibilityIdentifier("developer.benchmark.results")
+    }
+
+    private func developerMetric(
+      title: String,
+      before: Double,
+      after: Double,
+      lowerIsBetter: Bool
+    ) -> some View {
+      let improved = lowerIsBetter ? after < before : after > before
+
+      return VStack(alignment: .leading, spacing: 6) {
+        Text(title)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
+        Text("\(developerPercent(before)) → \(developerPercent(after))")
+          .font(.title3.monospacedDigit().weight(.semibold))
+        if improved {
+          Label("Improved", systemImage: "arrow.up.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.green)
+        } else {
+          Text("No improvement measured")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(14)
+      .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func developerPercent(_ value: Double) -> String {
+      value.formatted(.percent.precision(.fractionLength(1)))
+    }
+
+    private func runDeveloperBenchmark() {
+      do {
+        developerBenchmarkResult = try MacDeveloperBenchmark.run(recordings: controller.recordings)
+        developerBenchmarkError = nil
+      } catch {
+        developerBenchmarkResult = nil
+        developerBenchmarkError = error.localizedDescription
+      }
+    }
+
+    private func exportDeveloperBenchmark(
+      _ data: Data,
+      suggestedName: String,
+      contentType: String
+    ) {
+      do {
+        try MacDeveloperBenchmarkExporter.save(
+          data,
+          suggestedName: suggestedName,
+          allowedFileType: contentType
+        )
+        developerBenchmarkError = nil
+      } catch {
+        developerBenchmarkError = error.localizedDescription
+      }
+    }
+  #endif
 
   private var recordingDock: some View {
     HStack(spacing: 16) {
@@ -2202,10 +2417,6 @@ struct MacContentView: View {
       MacTranscriptionController.requiredSpeakerSampleSpeechDuration
     )
     return String(format: "%.1f of 10.0 seconds", recordedSeconds)
-  }
-
-  private func sampleCountText(_ count: Int) -> String {
-    count == 1 ? "1 voice sample" : "\(count) voice samples"
   }
 
   private func duration(_ value: TimeInterval) -> String {

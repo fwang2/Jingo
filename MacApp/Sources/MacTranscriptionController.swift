@@ -18,6 +18,9 @@ enum MacSection: Hashable {
   case speakers
   case account
   case settings
+  #if DEBUG
+    case developer
+  #endif
 }
 
 // MARK: - MacTranscriptionModel
@@ -2128,6 +2131,11 @@ final class MacTranscriptionController: ObservableObject {
     var names = recordings[recordingIndex].speakerNames ?? [:]
     var manualNames = recordings[recordingIndex].manuallyAssignedSpeakerNames ?? [:]
     if trimmedName.isEmpty {
+      SpeakerProfileMatcher.removeObservation(
+        sourceRecordingID: targetID.uuidString,
+        sourceSpeakerID: speakerID,
+        profiles: &speakerProfiles
+      )
       names.removeValue(forKey: speakerID)
       manualNames.removeValue(forKey: speakerID)
       var profileIDs = recordings[recordingIndex].speakerProfileIDs ?? [:]
@@ -2142,7 +2150,10 @@ final class MacTranscriptionController: ObservableObject {
           name: trimmedName,
           embedding: embedding,
           linkedProfileID: linkedProfileID,
-          profiles: &speakerProfiles
+          profiles: &speakerProfiles,
+          source: .confirmedRecording,
+          sourceRecordingID: targetID.uuidString,
+          sourceSpeakerID: speakerID
         ) {
           var profileIDs = recordings[recordingIndex].speakerProfileIDs ?? [:]
           profileIDs[speakerID] = profileID

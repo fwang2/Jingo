@@ -109,7 +109,7 @@ final class SpeakerProfileMatcherTests: XCTestCase {
     ).isEmpty)
   }
 
-  func testEnrollCreatesThenUpdatesNamedProfile() throws {
+  func testEnrollCreatesProfileThenIgnoresDuplicateSample() throws {
     var profiles: [SpeakerProfile] = []
     let profileID = try XCTUnwrap(SpeakerProfileMatcher.enroll(
       name: " Alice ",
@@ -128,8 +128,9 @@ final class SpeakerProfileMatcherTests: XCTestCase {
 
     XCTAssertEqual(updatedID, profileID)
     XCTAssertEqual(profiles.count, 1)
-    XCTAssertEqual(profiles[0].sampleCount, 2)
-    XCTAssertEqual(profiles[0].updatedAt, Date(timeIntervalSince1970: 2))
+    XCTAssertEqual(profiles[0].sampleCount, 1)
+    XCTAssertEqual(profiles[0].voiceSamples.count, 1)
+    XCTAssertEqual(profiles[0].updatedAt, Date(timeIntervalSince1970: 1))
     let similarity = try XCTUnwrap(SpeakerProfileMatcher.cosineSimilarity(
       profiles[0].embedding,
       profiles[0].embedding
@@ -155,14 +156,15 @@ final class SpeakerProfileMatcherTests: XCTestCase {
 
     let updatedID = SpeakerProfileMatcher.enroll(
       name: "Alice",
-      embedding: [0.9, 0.1],
+      embedding: [0.75, 0.66],
       linkedProfileID: profileID,
       profiles: &profiles
     )
 
     XCTAssertEqual(updatedID, profileID)
     XCTAssertEqual(profiles[0].sampleCount, 3)
-    XCTAssertGreaterThan(profiles[0].embedding[1], 0)
+    XCTAssertEqual(profiles[0].voiceSamples.count, 2)
+    XCTAssertGreaterThan(profiles[0].voiceSamples[1].embedding[1], 0)
   }
 
   func testEnrollmentUsesSingleDominantSpeaker() throws {

@@ -265,7 +265,7 @@ private actor MacForcedAlignmentEngine {
 // MARK: - MacFluidAudioDiarizer
 
 private actor MacFluidAudioDiarizer {
-  private static let shortSpeakerSpeechDurationMS: Int64 = 10000
+  private static let maximumEmbeddingCandidatesPerSpeaker = 6
 
   private static var configuration: OfflineDiarizerConfig {
     var configuration = OfflineDiarizerConfig.default
@@ -332,36 +332,84 @@ private actor MacFluidAudioDiarizer {
     }
 
     let validSpeakerIDs = Set(intervals.map(\.speakerID))
-    let speakerEmbeddings = (result.speakerDatabase ?? [:]).filter { speakerID, embedding in
+    let embeddingData = embeddingData(
+      from: result,
+      validSpeakerIDs: validSpeakerIDs
+    )
+    return MacSpeakerDiarizationResult(
+      intervals: intervals,
+      speakerEmbeddings: embeddingData.representatives,
+      speakerEmbeddingCandidates: embeddingData.candidates
+    )
+  }
+
+  private static func embeddingData(
+    from result: DiarizationResult,
+    validSpeakerIDs: Set<String>
+  ) -> (representatives: [String: [Float]], candidates: [String: [[Float]]]) {
+    let clusterEmbeddings = (result.speakerDatabase ?? [:]).filter { speakerID, embedding in
       validSpeakerIDs.contains(speakerID)
         && !embedding.isEmpty
         && embedding.allSatisfy(\.isFinite)
     }
-    let speechDurationMSBySpeaker = intervals.reduce(into: [String: Int64]()) { durations, interval in
-      durations[interval.speakerID, default: 0] += max(
-        interval.endTimeMS - interval.startTimeMS,
-        0
-      )
-    }
-    var speakerEmbeddingCandidates = speakerEmbeddings.mapValues { [$0] }
+    var chunkEmbeddingsBySpeaker: [String: [[Float]]] = [:]
     for chunk in result.chunkEmbeddings ?? [] {
-      guard let speechDurationMS = speechDurationMSBySpeaker[chunk.speakerId],
-            speechDurationMS < Self.shortSpeakerSpeechDurationMS,
+      guard validSpeakerIDs.contains(chunk.speakerId),
             !chunk.embedding256.isEmpty,
             chunk.embedding256.allSatisfy(\.isFinite)
       else {
         continue
       }
-
-      // A short participant's cluster average can be diluted by silence or a nearby
-      // speaker. Keep the clean per-window vectors as additional match candidates.
-      speakerEmbeddingCandidates[chunk.speakerId, default: []].append(chunk.embedding256)
+      chunkEmbeddingsBySpeaker[chunk.speakerId, default: []].append(chunk.embedding256)
     }
-    return MacSpeakerDiarizationResult(
-      intervals: intervals,
-      speakerEmbeddings: speakerEmbeddings,
-      speakerEmbeddingCandidates: speakerEmbeddingCandidates
-    )
+
+    var speakerEmbeddings = clusterEmbeddings
+    var speakerEmbeddingCandidates: [String: [[Float]]] = [:]
+    for speakerID in validSpeakerIDs {
+      let centralChunks = centralEmbeddings(
+        from: chunkEmbeddingsBySpeaker[speakerID] ?? []
+      )
+      if let representative = centralChunks.first {
+        speakerEmbeddings[speakerID] = representative
+      }
+
+      var candidates: [[Float]] = []
+      if let clusterEmbedding = clusterEmbeddings[speakerID] {
+        candidates.append(clusterEmbedding)
+      }
+      candidates.append(contentsOf: centralChunks.prefix(maximumEmbeddingCandidatesPerSpeaker))
+      if !candidates.isEmpty {
+        speakerEmbeddingCandidates[speakerID] = candidates
+      }
+    }
+    return (speakerEmbeddings, speakerEmbeddingCandidates)
+  }
+
+  private static func centralEmbeddings(from embeddings: [[Float]]) -> [[Float]] {
+    guard embeddings.count > 1 else {
+      return embeddings
+    }
+
+    return embeddings
+      .enumerated()
+      .map { index, embedding in
+        let similarities = embeddings.indices
+          .filter { $0 != index }
+          .compactMap {
+            SpeakerProfileMatcher.cosineSimilarity(embedding, embeddings[$0])
+          }
+        let centrality = similarities.isEmpty
+          ? -Float.infinity
+          : similarities.reduce(Float.zero, +) / Float(similarities.count)
+        return (index: index, embedding: embedding, centrality: centrality)
+      }
+      .sorted {
+        if $0.centrality == $1.centrality {
+          return $0.index < $1.index
+        }
+        return $0.centrality > $1.centrality
+      }
+      .map(\.embedding)
   }
 }
 

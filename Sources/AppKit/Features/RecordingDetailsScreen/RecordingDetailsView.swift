@@ -141,6 +141,7 @@ struct RecordingDetails {
 
       case let .speakerNameChanged(id, name):
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recordingID = state.recordingCard.recording.id
         var embedding: [Float]?
         var linkedProfileID: UUID?
         state.recordingCard.$recording.withLock { recording in
@@ -156,6 +157,16 @@ struct RecordingDetails {
           }
         }
 
+        if trimmedName.isEmpty {
+          state.$speakerProfiles.withLock { profiles in
+            SpeakerProfileMatcher.removeObservation(
+              sourceRecordingID: recordingID,
+              sourceSpeakerID: id,
+              profiles: &profiles
+            )
+          }
+        }
+
         if !trimmedName.isEmpty, let embedding {
           var enrolledProfileID: UUID?
           state.$speakerProfiles.withLock { profiles in
@@ -163,7 +174,10 @@ struct RecordingDetails {
               name: trimmedName,
               embedding: embedding,
               linkedProfileID: linkedProfileID,
-              profiles: &profiles
+              profiles: &profiles,
+              source: .confirmedRecording,
+              sourceRecordingID: recordingID,
+              sourceSpeakerID: id
             )
           }
           if let enrolledProfileID {

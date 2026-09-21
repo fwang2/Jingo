@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "observations": [
+    {
+      "id": "enroll-speaker-a",
+      "sequence": 1,
+      "speakerID": "speaker-a",
+      "meetingID": "enrollment-a",
+      "mode": "enrollment",
+      "embedding": [1.0, 0.0, 0.0],
+      "conditions": {
+        "device": "laptop",
+        "setting": "quiet"
+      }
+    },
+    {
+      "id": "enroll-speaker-b",
+      "sequence": 2,
+      "speakerID": "speaker-b",
+      "meetingID": "enrollment-b",
+      "mode": "enrollment",
+      "embedding": [0.0, 1.0, 0.0],
+      "conditions": {
+        "device": "laptop",
+        "setting": "quiet"
+      }
+    },
+    {
+      "id": "speaker-a-phone-1",
+      "sequence": 3,
+      "speakerID": "speaker-a",
+      "meetingID": "meeting-1",
+      "mode": "confirmedMeeting",
+      "embedding": [0.0, 0.0, 1.0],
+      "conditions": {
+        "device": "phone",
+        "setting": "noisy"
+      }
+    },
+    {
+      "id": "speaker-a-phone-2",
+      "sequence": 4,
+      "speakerID": "speaker-a",
+      "meetingID": "meeting-2",
+      "mode": "confirmedMeeting",
+      "embedding": [0.02, 0.0, 0.999],
+      "conditions": {
+        "device": "phone",
+        "setting": "noisy"
+      }
+    },
+    {
+      "id": "speaker-a-laptop-return",
+      "sequence": 5,
+      "speakerID": "speaker-a",
+      "meetingID": "meeting-3",
+      "mode": "evaluationOnly",
+      "embedding": [0.999, 0.0, 0.02],
+      "conditions": {
+        "device": "laptop",
+        "setting": "quiet"
+      }
+    },
+    {
+      "id": "unknown-speaker-c",
+      "sequence": 6,
+      "speakerID": "speaker-c",
+      "meetingID": "meeting-4",
+      "mode": "evaluationOnly",
+      "embedding": [0.70, 0.70, 0.0],
+      "conditions": {
+        "device": "laptop",
+        "setting": "quiet"
+      }
+    },
+    {
+      "id": "speaker-a-laptop-duplicate",
+      "sequence": 7,
+      "speakerID": "speaker-a",
+      "meetingID": "meeting-5",
+      "mode": "confirmedMeeting",
+      "embedding": [1.0, 0.0, 0.0],
+      "conditions": {
+        "device": "laptop",
+        "setting": "quiet"
+      }
+    }
+  ]
+}

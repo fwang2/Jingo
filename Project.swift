@@ -110,6 +110,20 @@ let macUITestScheme: Scheme = .scheme(
   )
 )
 
+let speakerProfileBenchmarkScheme: Scheme = .scheme(
+  name: "SpeakerProfileBenchmark",
+  shared: true,
+  buildAction: .buildAction(targets: ["SpeakerProfileBenchmark"]),
+  testAction: .targets(
+    ["SpeakerProfileBenchmarkTests"],
+    configuration: .debug
+  ),
+  runAction: .runAction(
+    configuration: .debug,
+    executable: "SpeakerProfileBenchmark"
+  )
+)
+
 func createAppTarget(suffix: String = "", isDev: Bool = false, scripts: [TargetScript] = [], dependencies: [TargetDependency] = []) -> Target {
   var targetInfoPlist = appInfoPlist
   if isDev {
@@ -202,6 +216,7 @@ let macTargets: [Target] = [
       .external(name: "MLXLMCommon"),
       .external(name: "Tokenizers"),
       .target(name: "MeetingSummaryCore"),
+      .target(name: "SpeakerProfileBenchmarkCore"),
     ],
     settings: .settings(
       base: [
@@ -245,6 +260,45 @@ let macTargets: [Target] = [
     sources: "Tests/MacAppUITests/**",
     dependencies: [
       .target(name: "JingoMac"),
+    ]
+  ),
+  .target(
+    name: "SpeakerProfileBenchmarkCore",
+    destinations: [.mac],
+    product: .staticFramework,
+    bundleId: "com.feiyiwang.Jingo.SpeakerProfileBenchmarkCore",
+    deploymentTargets: .macOS("14.0"),
+    infoPlist: .default,
+    sources: [
+      "Sources/SpeakerProfileBenchmark/**",
+      "Sources/SharedTranscription/SpeakerProfile.swift",
+      "Sources/SharedTranscription/SpeakerProfileLearning.swift",
+    ],
+    dependencies: []
+  ),
+  .target(
+    name: "SpeakerProfileBenchmark",
+    destinations: [.mac],
+    product: .commandLineTool,
+    bundleId: "com.feiyiwang.Jingo.SpeakerProfileBenchmark",
+    deploymentTargets: .macOS("14.0"),
+    infoPlist: .default,
+    sources: "Tools/SpeakerProfileBenchmark/**",
+    dependencies: [
+      .target(name: "SpeakerProfileBenchmarkCore"),
+    ]
+  ),
+  .target(
+    name: "SpeakerProfileBenchmarkTests",
+    destinations: [.mac],
+    product: .unitTests,
+    bundleId: "com.feiyiwang.Jingo.SpeakerProfileBenchmarkTests",
+    deploymentTargets: .macOS("14.0"),
+    infoPlist: .default,
+    sources: "Tests/SpeakerProfileBenchmarkTests/**",
+    resources: "TestResources/SpeakerProfileBenchmark/**",
+    dependencies: [
+      .target(name: "SpeakerProfileBenchmarkCore"),
     ]
   ),
 ]
@@ -518,7 +572,7 @@ let project = Project(
       ),
     ],
 
-  schemes: [storeKitScheme, macUITestScheme],
+  schemes: [storeKitScheme, macUITestScheme, speakerProfileBenchmarkScheme],
 
   resourceSynthesizers: [
     .files(extensions: ["bin"]),

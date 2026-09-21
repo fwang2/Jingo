@@ -5,9 +5,14 @@ import Foundation
 public struct SpeakerProfile: Codable, Equatable, Identifiable, Sendable {
   public let id: UUID
   public var name: String
-  public var embedding: [Float]
+  public var voiceSamples: [SpeakerVoiceSample]
+  public var pendingVoiceSamples: [SpeakerVoiceSample]
   public var sampleCount: Int
   public var updatedAt: Date
+
+  public var embedding: [Float] {
+    voiceSamples.first?.embedding ?? []
+  }
 
   public init(
     id: UUID = UUID(),
@@ -18,9 +23,76 @@ public struct SpeakerProfile: Codable, Equatable, Identifiable, Sendable {
   ) {
     self.id = id
     self.name = name
-    self.embedding = embedding
+    voiceSamples = embedding.isEmpty
+      ? []
+      : [SpeakerVoiceSample(embedding: embedding, source: .legacy, createdAt: updatedAt)]
+    pendingVoiceSamples = []
     self.sampleCount = max(sampleCount, 1)
     self.updatedAt = updatedAt
+  }
+
+  public init(
+    id: UUID = UUID(),
+    name: String,
+    voiceSamples: [SpeakerVoiceSample],
+    pendingVoiceSamples: [SpeakerVoiceSample] = [],
+    sampleCount: Int? = nil,
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.name = name
+    self.voiceSamples = voiceSamples
+    self.pendingVoiceSamples = pendingVoiceSamples
+    self.sampleCount = max(sampleCount ?? voiceSamples.count, voiceSamples.isEmpty ? 0 : 1)
+    self.updatedAt = updatedAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, name, embedding, sampleCount, updatedAt
+    case voiceSamples, pendingVoiceSamples
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(UUID.self, forKey: .id)
+    name = try container.decode(String.self, forKey: .name)
+    sampleCount = try container.decodeIfPresent(Int.self, forKey: .sampleCount) ?? 1
+    updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+
+    if let decodedSamples = try container.decodeIfPresent(
+      [SpeakerVoiceSample].self,
+      forKey: .voiceSamples
+    ) {
+      voiceSamples = decodedSamples
+    } else {
+      let legacyEmbedding = try container.decodeIfPresent([Float].self, forKey: .embedding) ?? []
+      voiceSamples = legacyEmbedding.isEmpty
+        ? []
+        : [
+          SpeakerVoiceSample(
+            embedding: legacyEmbedding,
+            source: .legacy,
+            createdAt: updatedAt
+          ),
+        ]
+    }
+    pendingVoiceSamples = try container.decodeIfPresent(
+      [SpeakerVoiceSample].self,
+      forKey: .pendingVoiceSamples
+    ) ?? []
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(id, forKey: .id)
+    try container.encode(name, forKey: .name)
+    try container.encode(embedding, forKey: .embedding)
+    try container.encode(sampleCount, forKey: .sampleCount)
+    try container.encode(updatedAt, forKey: .updatedAt)
+    try container.encode(voiceSamples, forKey: .voiceSamples)
+    if !pendingVoiceSamples.isEmpty {
+      try container.encode(pendingVoiceSamples, forKey: .pendingVoiceSamples)
+    }
   }
 }
 
@@ -53,12 +125,16 @@ public enum SpeakerProfileEnrollmentError: LocalizedError, Equatable, Sendable {
     switch self {
     case .duplicateName:
       "A speaker with this name already exists."
+
     case .emptyName:
       "Enter a name for this speaker."
+
     case .insufficientSpeech:
       "Record at least 6 seconds of clear speech."
+
     case .multipleSpeakers:
       "The sample contains more than one prominent speaker. Record one person in a quiet place."
+
     case .missingEmbedding:
       "A usable voice profile could not be created from this sample."
     }
@@ -77,6 +153,11 @@ public enum SpeakerProfileMatcher {
   public static let fallbackMinimumMargin: Float = 0.20
   public static let minimumEnrollmentSpeechMS: Int64 = 6000
   public static let minimumEnrollmentDominance: Double = 0.85
+  public static let duplicateSampleSimilarity: Float = 0.92
+  public static let activeSampleSimilarity: Float = 0.72
+  public static let pendingSampleCorroborationSimilarity: Float = 0.84
+  public static let maximumActiveSamples = 10
+  public static let maximumPendingSamples = 3
 
   public static func validatedName(
     _ name: String,
@@ -173,10 +254,10 @@ public enum SpeakerProfileMatcher {
     var candidates: [Candidate] = []
     for (speakerID, embeddings) in speakerEmbeddingCandidates {
       let ranked = profiles.compactMap { profile -> Candidate? in
-        let similarities = embeddings.compactMap {
-          cosineSimilarity($0, profile.embedding)
-        }
-        guard let similarity = similarities.max() else {
+        guard let similarity = profileSimilarity(
+          queryEmbeddings: embeddings,
+          profile: profile
+        ) else {
           return nil
         }
         return Candidate(speakerID: speakerID, profile: profile, similarity: similarity)
@@ -228,52 +309,26 @@ public enum SpeakerProfileMatcher {
     return result
   }
 
-  @discardableResult
-  public static func enroll(
-    name: String,
-    embedding: [Float],
-    linkedProfileID: UUID?,
-    profiles: inout [SpeakerProfile],
-    now: Date = Date()
-  ) -> UUID? {
-    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedName.isEmpty, let normalizedEmbedding = normalized(embedding) else {
+  private static func profileSimilarity(
+    queryEmbeddings: [[Float]],
+    profile: SpeakerProfile
+  ) -> Float? {
+    let perQueryBest = queryEmbeddings
+      .compactMap { queryEmbedding in
+        profile.voiceSamples
+          .compactMap {
+            cosineSimilarity(queryEmbedding, $0.embedding)
+          }
+          .max()
+      }
+      .sorted(by: >)
+    guard !perQueryBest.isEmpty else {
       return nil
     }
 
-    if let linkedProfileID,
-       let index = profiles.firstIndex(where: { $0.id == linkedProfileID }),
-       profiles[index].name.caseInsensitiveCompare(trimmedName) == .orderedSame,
-       profiles[index].embedding.count == normalizedEmbedding.count {
-      merge(
-        normalizedEmbedding,
-        into: &profiles[index],
-        name: trimmedName,
-        now: now
-      )
-      return linkedProfileID
-    }
-
-    if let index = profiles.firstIndex(where: {
-      $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame
-        && $0.embedding.count == normalizedEmbedding.count
-    }) {
-      merge(
-        normalizedEmbedding,
-        into: &profiles[index],
-        name: trimmedName,
-        now: now
-      )
-      return profiles[index].id
-    }
-
-    let profile = SpeakerProfile(
-      name: trimmedName,
-      embedding: normalizedEmbedding,
-      updatedAt: now
-    )
-    profiles.append(profile)
-    return profile.id
+    let retainedCount = max(1, (perQueryBest.count + 1) / 2)
+    let retained = perQueryBest.prefix(retainedCount)
+    return retained.reduce(Float.zero, +) / Float(retainedCount)
   }
 
   public static func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float? {
@@ -291,31 +346,20 @@ public enum SpeakerProfileMatcher {
       lhsMagnitude += left * left
       rhsMagnitude += right * right
     }
-    guard lhsMagnitude > 0, rhsMagnitude > 0 else { return nil }
+    guard lhsMagnitude > 0, rhsMagnitude > 0 else {
+      return nil
+    }
     return min(max(dot / sqrt(lhsMagnitude * rhsMagnitude), -1), 1)
   }
 
   private static func normalized(_ embedding: [Float]) -> [Float]? {
-    guard !embedding.isEmpty, embedding.allSatisfy(\.isFinite) else { return nil }
-    let magnitude = sqrt(embedding.reduce(into: Float.zero) { $0 += $1 * $1 })
-    guard magnitude > 0 else { return nil }
-    return embedding.map { $0 / magnitude }
-  }
-
-  private static func merge(
-    _ normalizedEmbedding: [Float],
-    into profile: inout SpeakerProfile,
-    name: String,
-    now: Date
-  ) {
-    let count = max(profile.sampleCount, 1)
-    let oldEmbedding = normalized(profile.embedding) ?? profile.embedding
-    let merged = zip(oldEmbedding, normalizedEmbedding).map { oldValue, newValue in
-      (oldValue * Float(count) + newValue) / Float(count + 1)
+    guard !embedding.isEmpty, embedding.allSatisfy(\.isFinite) else {
+      return nil
     }
-    profile.embedding = normalized(merged) ?? merged
-    profile.sampleCount = count + 1
-    profile.name = name
-    profile.updatedAt = now
+    let magnitude = sqrt(embedding.reduce(into: Float.zero) { $0 += $1 * $1 })
+    guard magnitude > 0 else {
+      return nil
+    }
+    return embedding.map { $0 / magnitude }
   }
 }

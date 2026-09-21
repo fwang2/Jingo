@@ -320,7 +320,7 @@ final class JingoMacUITests: XCTestCase {
     app.buttons["Known Speakers"].click()
     XCTAssertTrue(element("speakerProfiles.title").waitForExistence(timeout: 2))
     XCTAssertTrue(app.staticTexts["Feiyi"].exists)
-    XCTAssertTrue(app.staticTexts["2 voice samples"].exists)
+    XCTAssertFalse(app.staticTexts["2 voice samples"].exists)
     let playSample = element("speakerProfile.play.B29365B1-5DE8-416F-B5F8-92D44834FCF8")
     XCTAssertTrue(playSample.exists)
     XCTAssertTrue(playSample.isEnabled)
@@ -344,6 +344,18 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertTrue(
       app.staticTexts["The sample saves automatically after 10 seconds of detected speech."].exists
     )
+  }
+
+  func testDeveloperBenchmarkRunsManually() {
+    launch(scenario: "manual-speaker-override")
+
+    app.buttons["Developer"].click()
+    let runButton = element("developer.benchmark.run")
+    XCTAssertTrue(runButton.waitForExistence(timeout: 2))
+    runButton.click()
+
+    XCTAssertTrue(element("developer.benchmark.results").waitForExistence(timeout: 2))
+    XCTAssertTrue(app.staticTexts["Latest result"].exists)
   }
 
   private func launch(scenario: String) {

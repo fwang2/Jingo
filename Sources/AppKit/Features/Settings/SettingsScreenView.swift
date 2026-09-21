@@ -56,13 +56,8 @@ struct KnownSpeakersSectionView: View {
             Image(systemName: "person.wave.2.fill")
               .foregroundStyle(Color.accentColor)
 
-            VStack(alignment: .leading, spacing: 2) {
-              Text(profile.name)
-                .foregroundStyle(Color.DS.Text.base)
-              Text(sampleCountText(profile.sampleCount))
-                .textStyle(.caption)
-                .foregroundStyle(.secondary)
-            }
+            Text(profile.name)
+              .foregroundStyle(Color.DS.Text.base)
 
             Spacer()
 
@@ -156,10 +151,6 @@ struct KnownSpeakersSectionView: View {
         }
       }
     )
-  }
-
-  private func sampleCountText(_ count: Int) -> String {
-    count == 1 ? "1 voice sample" : "\(count) voice samples"
   }
 }
 
