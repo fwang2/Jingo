@@ -47,6 +47,8 @@ struct SettingsScreen {
     case addSpeakerSampleTapped(UUID)
     case addSpeakerTapped
     case forgetSpeakerTapped(UUID)
+    case forgetSpeakersTapped(Set<UUID>)
+    case mergeSpeakerProfilesSubmitted(Set<UUID>, into: UUID, name: String)
     case renameSpeakerSubmitted(UUID, String)
     case speakerEnrollment(PresentationAction<SpeakerEnrollment.Action>)
     case task
@@ -129,17 +131,45 @@ struct SettingsScreen {
         return .none
 
       case let .forgetSpeakerTapped(profileID):
-        state.$speakerProfiles.withLock { profiles in
-          profiles.removeAll { $0.id == profileID }
-        }
-        state.$recordings.withLock { recordings in
-          for index in recordings.indices {
-            guard var profileIDs = recordings[index].transcription?.speakerProfileIDs else {
-              continue
-            }
-            profileIDs = profileIDs.filter { $0.value != profileID }
-            recordings[index].transcription?.speakerProfileIDs = profileIDs
+        forgetSpeakerProfiles([profileID], state: &state)
+        return .none
+
+      case let .forgetSpeakersTapped(profileIDs):
+        forgetSpeakerProfiles(profileIDs, state: &state)
+        return .none
+
+      case let .mergeSpeakerProfilesSubmitted(profileIDs, targetProfileID, name):
+        do {
+          var mergedProfile: SpeakerProfile?
+          try state.$speakerProfiles.withLock { profiles in
+            mergedProfile = try SpeakerProfileMatcher.merge(
+              profileIDs: profileIDs,
+              into: targetProfileID,
+              named: name,
+              profiles: &profiles
+            )
           }
+          guard let mergedProfile else {
+            return .none
+          }
+          state.$recordings.withLock { recordings in
+            for index in recordings.indices {
+              guard var linkedProfiles = recordings[index].transcription?.speakerProfileIDs else {
+                continue
+              }
+              let linkedSpeakerIDs = linkedProfiles
+                .filter { profileIDs.contains($0.value) }
+                .map(\.key)
+              for speakerID in linkedSpeakerIDs {
+                linkedProfiles[speakerID] = mergedProfile.id
+                recordings[index].speakerNames[speakerID] = mergedProfile.name
+                recordings[index].transcription?.speakerNames[speakerID] = mergedProfile.name
+              }
+              recordings[index].transcription?.speakerProfileIDs = linkedProfiles
+            }
+          }
+        } catch {
+          state.alert = .error(error.equatable)
         }
         return .none
 
@@ -241,6 +271,24 @@ struct SettingsScreen {
     state.freeSpace = storage.freeSpace().readableString
     state.takenSpace = storage.takenSpace().readableString
     state.takenSpacePercentage = min(1, max(0, 1 - Double(storage.freeSpace()) / Double(storage.freeSpace() + storage.takenSpace())))
+  }
+
+  private func forgetSpeakerProfiles(_ profileIDs: Set<UUID>, state: inout State) {
+    guard !profileIDs.isEmpty else {
+      return
+    }
+    state.$speakerProfiles.withLock { profiles in
+      profiles.removeAll { profileIDs.contains($0.id) }
+    }
+    state.$recordings.withLock { recordings in
+      for index in recordings.indices {
+        guard var linkedProfiles = recordings[index].transcription?.speakerProfileIDs else {
+          continue
+        }
+        linkedProfiles = linkedProfiles.filter { !profileIDs.contains($0.value) }
+        recordings[index].transcription?.speakerProfileIDs = linkedProfiles
+      }
+    }
   }
 }
 

@@ -182,6 +182,61 @@ public extension SpeakerProfileMatcher {
       }
     }
   }
+
+  @discardableResult
+  static func merge(
+    profileIDs: Set<UUID>,
+    into targetProfileID: UUID,
+    named name: String,
+    profiles: inout [SpeakerProfile],
+    now: Date = Date()
+  ) throws -> SpeakerProfile {
+    guard profileIDs.count >= 2,
+          profileIDs.contains(targetProfileID),
+          let targetIndex = profiles.firstIndex(where: { $0.id == targetProfileID })
+    else {
+      throw SpeakerProfileEnrollmentError.missingEmbedding
+    }
+
+    let selectedProfiles = profiles.filter { profileIDs.contains($0.id) }
+    guard selectedProfiles.count == profileIDs.count else {
+      throw SpeakerProfileEnrollmentError.missingEmbedding
+    }
+
+    let trimmedName = try validatedName(
+      name,
+      excluding: targetProfileID,
+      profiles: profiles.filter { !profileIDs.contains($0.id) || $0.id == targetProfileID }
+    )
+    let sampleCount = selectedProfiles.reduce(0) { $0 + $1.sampleCount }
+    let activeSamples = selectedProfiles
+      .flatMap(\.voiceSamples)
+      .sorted(by: preferredMergeOrder)
+
+    var mergedProfile = SpeakerProfile(
+      id: targetProfileID,
+      name: trimmedName,
+      voiceSamples: [],
+      sampleCount: sampleCount,
+      updatedAt: now
+    )
+    var mergedSampleIDs = Set<UUID>()
+    for sample in activeSamples where mergedSampleIDs.insert(sample.id).inserted {
+      _ = addActiveSample(sample, to: &mergedProfile)
+    }
+
+    let activeSampleIDs = Set(mergedProfile.voiceSamples.map(\.id))
+    var pendingSampleIDs = activeSampleIDs
+    let pendingSamples = selectedProfiles
+      .flatMap(\.pendingVoiceSamples)
+      .filter { pendingSampleIDs.insert($0.id).inserted }
+      .sorted { $0.createdAt < $1.createdAt }
+    mergedProfile.pendingVoiceSamples = Array(pendingSamples.suffix(maximumPendingSamples))
+
+    profiles[targetIndex] = mergedProfile
+    profiles.removeAll { $0.id != targetProfileID && profileIDs.contains($0.id) }
+    return mergedProfile
+  }
 }
 
 // MARK: - Private Helpers
@@ -189,6 +244,34 @@ public extension SpeakerProfileMatcher {
 private extension SpeakerProfileMatcher {
   static var diversityReplacementMargin: Float {
     0.02
+  }
+
+  static func preferredMergeOrder(
+    _ lhs: SpeakerVoiceSample,
+    _ rhs: SpeakerVoiceSample
+  ) -> Bool {
+    let lhsPriority = mergePriority(for: lhs.source)
+    let rhsPriority = mergePriority(for: rhs.source)
+    if lhsPriority != rhsPriority {
+      return lhsPriority < rhsPriority
+    }
+    if lhs.qualityScore != rhs.qualityScore {
+      return (lhs.qualityScore ?? 0) > (rhs.qualityScore ?? 0)
+    }
+    return lhs.createdAt > rhs.createdAt
+  }
+
+  static func mergePriority(for source: SpeakerVoiceSampleSource) -> Int {
+    switch source {
+    case .voiceRecording:
+      0
+
+    case .confirmedRecording:
+      1
+
+    case .legacy:
+      2
+    }
   }
 
   static func add(
