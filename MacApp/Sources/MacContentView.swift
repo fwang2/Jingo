@@ -7,8 +7,12 @@ import SwiftUI
 struct MacContentView: View {
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var controller = MacTranscriptionController()
-  @State private var expandedRecordingIDs: Set<UUID> = []
+  @State private var recordingsTab = RecordingsTab.library
+  @State private var transcriptRecordingID: UUID?
   @State private var recordingToTrash: MacRecording?
+  @State private var isSelectingRecordings = false
+  @State private var selectedRecordingIDs: Set<UUID> = []
+  @State private var batchTrashConfirmationIsPresented = false
   @State private var profileToForget: SpeakerProfile?
   @State private var profileToRename: SpeakerProfile?
   @State private var speakerEnrollmentRequest: SpeakerEnrollmentRequest?
@@ -65,7 +69,7 @@ struct MacContentView: View {
         speakerRenameRequest = nil
       }
     } message: {
-      Text("This name will also help recognize the speaker in future recordings.")
+      Text("This correction stays with this transcript and also helps recognize the speaker in future recordings.")
     }
     .alert("Rename Known Speaker", isPresented: renameProfileIsPresented) {
       TextField("Name", text: $speakerProfileNameDraft)
@@ -101,12 +105,36 @@ struct MacContentView: View {
       Button("Move to Trash", role: .destructive) {
         guard let recordingToTrash else { return }
         controller.moveRecordingToTrash(recordingToTrash.id)
-        expandedRecordingIDs.remove(recordingToTrash.id)
+        selectedRecordingIDs.remove(recordingToTrash.id)
+        if transcriptRecordingID == recordingToTrash.id {
+          transcriptRecordingID = nil
+          recordingsTab = .library
+        }
         self.recordingToTrash = nil
       }
       Button("Cancel", role: .cancel) {}
     } message: {
       Text("The recording can be recovered from the Trash until it is emptied.")
+    }
+    .confirmationDialog(
+      batchTrashConfirmationTitle,
+      isPresented: $batchTrashConfirmationIsPresented,
+      titleVisibility: .visible
+    ) {
+      Button(batchTrashConfirmationButtonTitle, role: .destructive) {
+        let removedIDs = controller.moveRecordingsToTrash(selectedRecordingIDs)
+        if let transcriptRecordingID, removedIDs.contains(transcriptRecordingID) {
+          self.transcriptRecordingID = nil
+          recordingsTab = .library
+        }
+        selectedRecordingIDs.subtract(removedIDs)
+        if selectedRecordingIDs.isEmpty {
+          isSelectingRecordings = false
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("The selected recordings can be recovered from the Trash until it is emptied.")
     }
     .sheet(item: $speakerEnrollmentRequest) { request in
       speakerEnrollmentSheet(request)
@@ -236,7 +264,7 @@ struct MacContentView: View {
                     speakerTurnsView(
                       controller.speakerTurns,
                       names: controller.speakerNames,
-                      recordingID: nil,
+                      recording: nil,
                       presentation: .canvas,
                       allowsRenaming: !controller.isRecording
                     )
@@ -342,11 +370,32 @@ struct MacContentView: View {
   }
 
   private var recordings: some View {
+    TabView(selection: $recordingsTab) {
+      recordingsLibrary
+        .tabItem {
+          Label("Recordings", systemImage: "waveform")
+        }
+        .tag(RecordingsTab.library)
+
+      if let transcriptRecording {
+        recordingTranscript(transcriptRecording)
+          .tabItem {
+            Label("Transcript", systemImage: "doc.text")
+          }
+          .tag(RecordingsTab.transcript)
+      }
+    }
+    .accessibilityIdentifier("recordings.tabs")
+  }
+
+  private var transcriptRecording: MacRecording? {
+    guard let transcriptRecordingID else { return nil }
+    return controller.recordings.first { $0.id == transcriptRecordingID }
+  }
+
+  private var recordingsLibrary: some View {
     VStack(spacing: 0) {
-      pageHeader(
-        title: "Recordings",
-        subtitle: recordingCountText
-      )
+      recordingsHeader
 
       Divider()
 
@@ -373,9 +422,83 @@ struct MacContentView: View {
     }
   }
 
+  private var recordingsHeader: some View {
+    HStack {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Recordings")
+          .font(.title2.bold())
+        Text(recordingCountText)
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+      }
+
+      Spacer()
+
+      if isSelectingRecordings {
+        Button(allSelectableRecordingsAreSelected ? "Deselect All" : "Select All") {
+          if allSelectableRecordingsAreSelected {
+            selectedRecordingIDs.removeAll()
+          } else {
+            selectedRecordingIDs = selectableRecordingIDs
+          }
+        }
+        .disabled(selectableRecordingIDs.isEmpty)
+        .accessibilityIdentifier("recordings.selectAll")
+
+        Button("Move Selected to Trash", systemImage: "trash") {
+          batchTrashConfirmationIsPresented = true
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.red)
+        .disabled(selectedRecordingIDs.isEmpty)
+        .accessibilityIdentifier("recordings.batchTrash")
+
+        Button("Cancel") {
+          selectedRecordingIDs.removeAll()
+          isSelectingRecordings = false
+        }
+        .accessibilityIdentifier("recordings.cancelSelection")
+      } else {
+        Button("Select") {
+          isSelectingRecordings = true
+        }
+        .disabled(selectableRecordingIDs.isEmpty)
+        .accessibilityIdentifier("recordings.selectMode")
+      }
+    }
+    .padding(.horizontal, 24)
+    .padding(.vertical, 17)
+  }
+
   private func recordingRow(_ recording: MacRecording) -> some View {
     VStack(spacing: 0) {
       HStack(spacing: 16) {
+        if isSelectingRecordings {
+          Button {
+            if selectedRecordingIDs.contains(recording.id) {
+              selectedRecordingIDs.remove(recording.id)
+            } else {
+              selectedRecordingIDs.insert(recording.id)
+            }
+          } label: {
+            Image(
+              systemName: selectedRecordingIDs.contains(recording.id)
+                ? "checkmark.circle.fill"
+                : "circle"
+            )
+            .font(.title3)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(Color.accentColor)
+          .disabled(controller.offlineTranscriptionRecordingID == recording.id)
+          .accessibilityLabel(
+            selectedRecordingIDs.contains(recording.id)
+              ? "Deselect recording"
+              : "Select recording"
+          )
+          .accessibilityIdentifier("recording.selection.\(recording.id.uuidString)")
+        }
+
         Button {
           controller.togglePlayback(for: recording)
         } label: {
@@ -419,6 +542,17 @@ struct MacContentView: View {
 
         recordingActions(for: recording)
 
+        if !recording.transcript.isEmpty {
+          Button {
+            transcriptRecordingID = recording.id
+            recordingsTab = .transcript
+          } label: {
+            Label("Transcript", systemImage: "doc.text")
+          }
+          .buttonStyle(.borderless)
+          .accessibilityIdentifier("recording.transcript.\(recording.id.uuidString)")
+        }
+
         Button {
           recordingToTrash = recording
         } label: {
@@ -431,43 +565,9 @@ struct MacContentView: View {
         .help("Move to Trash")
         .accessibilityLabel("Move recording to Trash")
         .accessibilityIdentifier("recording.trash.\(recording.id.uuidString)")
-
-        if !recording.transcript.isEmpty {
-          Button {
-            if expandedRecordingIDs.contains(recording.id) {
-              expandedRecordingIDs.remove(recording.id)
-            } else {
-              expandedRecordingIDs.insert(recording.id)
-            }
-          } label: {
-            Image(systemName: expandedRecordingIDs.contains(recording.id) ? "chevron.up" : "chevron.down")
-              .frame(width: 24, height: 24)
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel(expandedRecordingIDs.contains(recording.id) ? "Hide transcript" : "Show transcript")
-        }
       }
       .padding(.horizontal, 18)
       .padding(.vertical, 15)
-
-      if expandedRecordingIDs.contains(recording.id) {
-        Divider()
-          .padding(.horizontal, 18)
-
-        VStack(alignment: .leading, spacing: 22) {
-          recordingSummary(recording)
-
-          if let turns = recording.speakerTurns, !turns.isEmpty {
-            Divider()
-            speakerTurnsView(
-              turns,
-              names: recording.speakerNames ?? [:],
-              recordingID: recording.id
-            )
-          }
-        }
-        .padding(18)
-      }
     }
     .background(
       Color(nsColor: .textBackgroundColor),
@@ -496,7 +596,7 @@ struct MacContentView: View {
   private func recordingActions(for recording: MacRecording) -> some View {
     Menu {
       Button(
-        recording.transcript.isEmpty ? "Transcribe Offline" : "Refine Offline",
+        recording.transcript.isEmpty ? "Transcribe Offline" : "Retranscribe Offline",
         systemImage: "waveform.badge.magnifyingglass"
       ) {
         controller.transcribeOffline(recording.id)
@@ -506,13 +606,6 @@ struct MacContentView: View {
           || controller.isFinalizingRecording
           || controller.offlineTranscriptionRecordingID != nil
       )
-
-      if recording.liveTranscriptSnapshot != nil {
-        Button("Restore Live Transcript", systemImage: "arrow.uturn.backward") {
-          controller.restoreLiveTranscript(for: recording.id)
-        }
-        .disabled(controller.offlineTranscriptionRecordingID == recording.id)
-      }
     } label: {
       Image(systemName: "ellipsis.circle")
         .frame(width: 24, height: 24)
@@ -521,6 +614,57 @@ struct MacContentView: View {
     .fixedSize()
     .accessibilityLabel("Recording actions")
     .accessibilityIdentifier("recording.actions.\(recording.id.uuidString)")
+  }
+
+  private func recordingTranscript(_ recording: MacRecording) -> some View {
+    VStack(spacing: 0) {
+      pageHeader(
+        title: "Transcript",
+        subtitle: recordingTranscriptSubtitle(recording)
+      )
+
+      Divider()
+
+      ScrollView {
+        VStack(alignment: .leading, spacing: 22) {
+          recordingSummary(recording)
+
+          if recording.summary != nil {
+            Divider()
+          }
+
+          if let turns = recording.speakerTurns, !turns.isEmpty {
+            speakerTurnsView(
+              turns,
+              names: recording.speakerNames ?? [:],
+              recording: recording
+            )
+          } else {
+            Text(recording.transcript)
+              .font(.body)
+              .lineSpacing(4)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .topLeading)
+              .accessibilityIdentifier("recording.transcriptText")
+          }
+        }
+        .padding(24)
+        .frame(maxWidth: 940)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+      }
+      .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
+  }
+
+  private func recordingTranscriptSubtitle(_ recording: MacRecording) -> String {
+    var details = [recording.createdAt.formatted(date: .abbreviated, time: .shortened)]
+    if let transcriptionModel = recording.transcriptionModel {
+      details.append(transcriptionModel.title)
+    }
+    if let audioSourceMode = recording.audioSourceMode {
+      details.append(audioSourceMode.title)
+    }
+    return details.joined(separator: " · ")
   }
 
   @ViewBuilder
@@ -735,7 +879,7 @@ struct MacContentView: View {
   private func speakerTurnsView(
     _ turns: [MacSpeakerTurn],
     names: [String: String],
-    recordingID: UUID?,
+    recording: MacRecording?,
     presentation: SpeakerTurnPresentation = .recording,
     allowsRenaming: Bool = true
   ) -> some View {
@@ -757,7 +901,7 @@ struct MacContentView: View {
                   beginRenaming(
                     speakerID: speakerID,
                     currentName: speakerName,
-                    recordingID: recordingID
+                    recordingID: recording?.id
                   )
                 } label: {
                   Label(speakerName, systemImage: "person.fill")
@@ -789,6 +933,28 @@ struct MacContentView: View {
               .accessibilityElement()
               .accessibilityLabel("\(timestamp(turn.startTimeMS)) – \(timestamp(turn.endTimeMS))")
               .accessibilityIdentifier("speakerTurn.timestamp.\(index)")
+
+            if let recording {
+              let isPlayingTurn = controller.playingRecordingID == recording.id
+                && controller.playingRecordingStartTimeMS == max(turn.startTimeMS, 0)
+              Button {
+                controller.togglePlayback(for: recording, at: turn.startTimeMS)
+              } label: {
+                Image(systemName: isPlayingTurn ? "stop.fill" : "play.fill")
+                  .font(.caption.weight(.semibold))
+                  .frame(width: 24, height: 24)
+                  .background(Color.accentColor.opacity(0.11), in: Circle())
+              }
+              .buttonStyle(.plain)
+              .foregroundStyle(Color.accentColor)
+              .accessibilityLabel(
+                isPlayingTurn
+                  ? "Stop playback from \(timestamp(turn.startTimeMS))"
+                  : "Play from \(timestamp(turn.startTimeMS))"
+              )
+              .accessibilityIdentifier("speakerTurn.playback.\(index)")
+              .help(isPlayingTurn ? "Stop playback" : "Play from this point")
+            }
           }
 
           Text(turn.text)
@@ -1813,6 +1979,24 @@ struct MacContentView: View {
     return count == 1 ? "1 recording saved locally" : "\(count) recordings saved locally"
   }
 
+  private var selectableRecordingIDs: Set<UUID> {
+    Set(controller.recordings.compactMap { recording in
+      controller.offlineTranscriptionRecordingID == recording.id ? nil : recording.id
+    })
+  }
+
+  private var allSelectableRecordingsAreSelected: Bool {
+    !selectableRecordingIDs.isEmpty && selectableRecordingIDs.isSubset(of: selectedRecordingIDs)
+  }
+
+  private var batchTrashConfirmationTitle: String {
+    "Move \(selectedRecordingIDs.count) \(selectedRecordingIDs.count == 1 ? "recording" : "recordings") to the Trash?"
+  }
+
+  private var batchTrashConfirmationButtonTitle: String {
+    "Move \(selectedRecordingIDs.count) \(selectedRecordingIDs.count == 1 ? "Recording" : "Recordings") to Trash"
+  }
+
   private var recordingElapsedTimeText: String {
     let totalSeconds = max(0, Int(controller.recordingElapsedTime.rounded(.down)))
     let hours = totalSeconds / 3600
@@ -2266,6 +2450,13 @@ private struct MarkdownText: View {
     case quote(String)
     case code(String)
   }
+}
+
+// MARK: - RecordingsTab
+
+private enum RecordingsTab: Hashable {
+  case library
+  case transcript
 }
 
 // MARK: - SpeakerRenameRequest

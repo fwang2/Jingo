@@ -31,6 +31,7 @@ struct SpeakerAttributionTurn: Equatable, Sendable {
 enum SpeakerAttributionCore {
   private static let maximumSpeakerGapMS: Int64 = 750
   private static let longPauseMS: Int64 = 1200
+  private static let minimumAlignmentCoverage = 0.70
   private static let sentenceEndingPunctuation: Set<Character> = [".", "!", "?", "…", "。", "！", "？"]
   private static let boundaryPunctuation: Set<Character> = [
     ".", ",", "!", "?", ";", ":", "…", "。", "，", "、", "！", "？", "；", "：",
@@ -96,6 +97,35 @@ enum SpeakerAttributionCore {
       let separator = needsSpaceAtBoundary(between: result, and: text) ? " " : ""
       result += separator + text
     }
+  }
+
+  static func hasSufficientAlignmentCoverage(
+    transcript: String,
+    alignedWordTexts: [String]
+  ) -> Bool {
+    let transcriptCharacterCount = contentCharacterCount(in: transcript)
+    guard transcriptCharacterCount > 0, !alignedWordTexts.isEmpty else { return false }
+
+    var matchedCharacterCount = 0
+    var searchStart = transcript.startIndex
+    for rawWord in alignedWordTexts {
+      let word = rawWord.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !word.isEmpty,
+            searchStart < transcript.endIndex,
+            let range = transcript.range(
+              of: word,
+              options: [.caseInsensitive, .diacriticInsensitive],
+              range: searchStart ..< transcript.endIndex
+            )
+      else {
+        continue
+      }
+      matchedCharacterCount += contentCharacterCount(in: String(transcript[range]))
+      searchStart = range.upperBound
+    }
+
+    return Double(matchedCharacterCount) / Double(transcriptCharacterCount)
+      >= minimumAlignmentCoverage
   }
 
   private static func speakerID(
@@ -283,10 +313,41 @@ enum SpeakerAttributionCore {
     }
 
     return ranges.indices.map { index in
-      let start = index == ranges.startIndex ? transcript.startIndex : ranges[index].lowerBound
-      let end = index + 1 < ranges.endIndex ? ranges[index + 1].lowerBound : transcript.endIndex
+      let range = ranges[index]
+      let unmatchedPrefix = transcript[..<range.lowerBound]
+      let start = index == ranges.startIndex && !containsContent(in: unmatchedPrefix)
+        ? transcript.startIndex
+        : range.lowerBound
+      let limit = index + 1 < ranges.endIndex ? ranges[index + 1].lowerBound : transcript.endIndex
+      let end = trailingNonContentEnd(
+        in: transcript,
+        after: range.upperBound,
+        before: limit
+      )
       return String(transcript[start ..< end])
     }
+  }
+
+  private static func trailingNonContentEnd(
+    in text: String,
+    after start: String.Index,
+    before limit: String.Index
+  ) -> String.Index {
+    var index = start
+    while index < limit {
+      let nextIndex = text.index(after: index)
+      guard !containsContent(in: text[index ..< nextIndex]) else { break }
+      index = nextIndex
+    }
+    return index
+  }
+
+  private static func contentCharacterCount(in text: String) -> Int {
+    text.unicodeScalars.count(where: CharacterSet.alphanumerics.contains)
+  }
+
+  private static func containsContent(in text: some StringProtocol) -> Bool {
+    text.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains)
   }
 
   private static func fallbackProjectedText(for words: [SpeakerAttributionWord]) -> [String] {

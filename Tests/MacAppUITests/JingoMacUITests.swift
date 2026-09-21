@@ -133,7 +133,7 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertTrue(element("speakerTurn.text.1").label.contains("transcript canvas"))
   }
 
-  func testRecordingActionsOfferOfflineRefinementAndLiveRestore() {
+  func testRecordingActionsOfferOfflineReplacementWithoutLiveRestore() {
     launch(scenario: "offline-refined")
 
     app.buttons["Recordings"].click()
@@ -142,14 +142,47 @@ final class JingoMacUITests: XCTestCase {
     )
     XCTAssertTrue(actions.waitForExistence(timeout: 2))
     actions.click()
-    XCTAssertTrue(app.menuItems["Refine Offline"].exists)
-    XCTAssertTrue(app.menuItems["Restore Live Transcript"].exists)
+    XCTAssertTrue(app.menuItems["Retranscribe Offline"].exists)
+    XCTAssertFalse(app.menuItems["Restore Live Transcript"].exists)
+  }
 
-    app.menuItems["Restore Live Transcript"].click()
+  func testTranscriptLinkOpensTranscriptTabBesideRecordings() {
+    launch(scenario: "offline-refined")
+
+    app.buttons["Recordings"].click()
+    openInstalledRecordingTranscript()
     XCTAssertTrue(
-      app.staticTexts["The original live transcript is still available."]
+      element("recording.transcriptText")
         .waitForExistence(timeout: 2)
     )
+    XCTAssertTrue(element("recordings.tabs").exists)
+    XCTAssertTrue(app.staticTexts["Transcript"].exists)
+  }
+
+  func testManualSpeakerNameSurvivesPersistenceAndDiarizationIDChanges() {
+    launch(scenario: "manual-speaker-override")
+
+    app.buttons["Recordings"].click()
+    openInstalledRecordingTranscript()
+    XCTAssertTrue(element("speaker.cluster-b").waitForExistence(timeout: 2))
+    XCTAssertTrue(element("speaker.cluster-b").label.contains("Jordan"))
+  }
+
+  func testSpeakerTurnPlaybackStartsAtTurnTimestamp() {
+    launch(scenario: "manual-speaker-override")
+
+    app.buttons["Recordings"].click()
+    openInstalledRecordingTranscript()
+
+    let playback = element("speakerTurn.playback.0")
+    XCTAssertTrue(playback.waitForExistence(timeout: 2))
+    XCTAssertTrue(element("speakerTurn.playback.1").exists)
+    XCTAssertEqual(playback.label, "Play from 00:01")
+    playback.click()
+
+    let playing = NSPredicate(format: "label == %@", "Stop playback from 00:01")
+    expectation(for: playing, evaluatedWith: playback)
+    waitForExpectations(timeout: 2)
   }
 
   func testRecordingPlaybackCanBeStoppedAndRecordingCanMoveToTrash() {
@@ -178,11 +211,35 @@ final class JingoMacUITests: XCTestCase {
     app.sheets.buttons["Cancel"].click()
   }
 
+  func testMultipleRecordingsCanBeSelectedAndMovedToTrash() {
+    launch(scenario: "multiple-recordings")
+
+    app.buttons["Recordings"].click()
+    let firstID = "3C476724-2F61-4630-A237-411F9B460A76"
+    let secondID = "5A4D17F4-9F8F-47EF-836B-E181A6A98F01"
+    let remainingID = "B1A70D4C-6B86-454C-8577-3506572C17B4"
+    XCTAssertTrue(element("recording.playback.\(firstID)").waitForExistence(timeout: 2))
+
+    element("recordings.selectMode").click()
+    element("recordings.selectAll").click()
+    element("recording.selection.\(remainingID)").click()
+    element("recordings.batchTrash").click()
+
+    let confirm = app.sheets.buttons["Move 2 Recordings to Trash"]
+    XCTAssertTrue(confirm.waitForExistence(timeout: 2))
+    confirm.click()
+
+    XCTAssertFalse(element("recording.playback.\(firstID)").exists)
+    XCTAssertFalse(element("recording.playback.\(secondID)").exists)
+    XCTAssertTrue(element("recording.playback.\(remainingID)").exists)
+    XCTAssertTrue(app.staticTexts["1 recording saved locally"].exists)
+  }
+
   func testFailedSummaryOffersModelDownload() {
     launch(scenario: "summary-failed")
 
     app.buttons["Recordings"].click()
-    app.buttons["Show transcript"].click()
+    openInstalledRecordingTranscript()
 
     XCTAssertTrue(app.staticTexts["Summary unavailable"].waitForExistence(timeout: 2))
     XCTAssertTrue(element("recording.prepareSummaryModel").exists)
@@ -218,7 +275,7 @@ final class JingoMacUITests: XCTestCase {
     launch(scenario: "summary-markdown")
 
     app.buttons["Recordings"].click()
-    app.buttons["Show transcript"].click()
+    openInstalledRecordingTranscript()
 
     XCTAssertEqual(
       element("summary.overview").label,
@@ -280,6 +337,10 @@ final class JingoMacUITests: XCTestCase {
     app.launchEnvironment["JINGO_UI_TEST_SCENARIO"] = scenario
     app.launch()
     XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+  }
+
+  private func openInstalledRecordingTranscript() {
+    element("recording.transcript.3C476724-2F61-4630-A237-411F9B460A76").click()
   }
 
   private func element(_ identifier: String) -> XCUIElement {

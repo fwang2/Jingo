@@ -146,4 +146,28 @@ final class SpeakerAttributedTranscriptionMergerTests: XCTestCase {
     XCTAssertNil(segments.first?.speaker)
     XCTAssertEqual(segments.first?.text, "Hello world你好。")
   }
+
+  func testRejectsSparseAlignmentCoverage() {
+    XCTAssertFalse(SpeakerAttributionCore.hasSufficientAlignmentCoverage(
+      transcript: "one two three four five six seven eight nine ten",
+      alignedWordTexts: ["three"]
+    ))
+    XCTAssertTrue(SpeakerAttributionCore.hasSufficientAlignmentCoverage(
+      transcript: "one two three four five",
+      alignedWordTexts: ["one", "two", "three", "four", "five"]
+    ))
+  }
+
+  func testDoesNotAttachUnmatchedTranscriptTailToLastAlignedWord() {
+    let segments = SpeakerAttributedTranscriptionMerger.merge(
+      transcript: "one two three four five",
+      alignedWords: [
+        ForcedAlignmentWord(text: "one", startTimeMS: 0, endTimeMS: 100),
+        ForcedAlignmentWord(text: "two", startTimeMS: 100, endTimeMS: 200),
+      ],
+      speakerSegments: []
+    )
+
+    XCTAssertEqual(segments.first?.text, "one two.")
+  }
 }

@@ -5,7 +5,7 @@ import ScreenCaptureKit
 
 // MARK: - MacAudioSourceMode
 
-enum MacAudioSourceMode: String, CaseIterable, Identifiable, Sendable {
+enum MacAudioSourceMode: String, CaseIterable, Codable, Identifiable, Sendable {
   case automatic
   case microphone
   case meetingAudio

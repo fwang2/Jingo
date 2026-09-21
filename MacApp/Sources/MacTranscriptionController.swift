@@ -22,10 +22,12 @@ enum MacSection: Hashable {
 
 // MARK: - MacTranscriptionModel
 
-enum MacTranscriptionModel: String, CaseIterable, Identifiable, Sendable {
+enum MacTranscriptionModel: String, CaseIterable, Codable, Identifiable, Sendable {
   case parakeetUnifiedEN
   case qwen3ASR
   case whisperLargeV3Turbo
+
+  static let offlineDefault = MacTranscriptionModel.whisperLargeV3Turbo
 
   var id: Self {
     self
@@ -93,43 +95,103 @@ struct MacRecording: Codable, Equatable, Identifiable {
   var speakerNames: [String: String]?
   var speakerEmbeddings: [String: [Float]]?
   var speakerProfileIDs: [String: UUID]?
+  var manuallyAssignedSpeakerNames: [String: String]? = nil
+  var transcriptionModel: MacTranscriptionModel? = nil
+  var audioSourceMode: MacAudioSourceMode? = nil
   var summary: MeetingSummary? = nil
-  var liveTranscriptSnapshot: MacTranscriptSnapshot? = nil
 
-  var transcriptSnapshot: MacTranscriptSnapshot {
-    MacTranscriptSnapshot(
-      transcript: transcript,
-      speakerTurns: speakerTurns,
-      speakerNames: speakerNames,
-      speakerEmbeddings: speakerEmbeddings,
-      speakerProfileIDs: speakerProfileIDs
-    )
-  }
+  mutating func replaceTranscript(with snapshot: MacTranscriptSnapshot) {
+    let previousManualNames = manuallyAssignedSpeakerNames ?? [:]
+    let previousEmbeddings = speakerEmbeddings ?? [:]
+    let previousProfileIDs = speakerProfileIDs ?? [:]
 
-  mutating func applyTranscriptSnapshot(_ snapshot: MacTranscriptSnapshot) {
     transcript = snapshot.transcript
     speakerTurns = snapshot.speakerTurns
     speakerNames = snapshot.speakerNames
     speakerEmbeddings = snapshot.speakerEmbeddings
     speakerProfileIDs = snapshot.speakerProfileIDs
-  }
 
-  mutating func preserveLiveTranscriptIfNeeded() {
-    guard liveTranscriptSnapshot == nil,
-          !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    else {
+    let newSpeakerIDs = Set(snapshot.speakerTurns?.compactMap(\.speakerID) ?? [])
+    guard !previousManualNames.isEmpty else {
+      manuallyAssignedSpeakerNames = nil
       return
     }
-    liveTranscriptSnapshot = transcriptSnapshot
+    guard !newSpeakerIDs.isEmpty else {
+      manuallyAssignedSpeakerNames = previousManualNames
+      speakerNames = (snapshot.speakerNames ?? [:]).merging(previousManualNames) {
+        _, manual in manual
+      }
+      speakerEmbeddings = previousEmbeddings.merging(snapshot.speakerEmbeddings ?? [:]) {
+        _, new in new
+      }
+      speakerProfileIDs = previousProfileIDs.isEmpty ? nil : previousProfileIDs
+      return
+    }
+
+    let speakerIDMapping = Self.mapManuallyNamedSpeakers(
+      previousManualNames: previousManualNames,
+      previousEmbeddings: previousEmbeddings,
+      newSpeakerIDs: newSpeakerIDs,
+      newEmbeddings: snapshot.speakerEmbeddings ?? [:]
+    )
+    var resolvedNames = speakerNames ?? [:]
+    var resolvedProfileIDs = speakerProfileIDs ?? [:]
+    var remappedManualNames: [String: String] = [:]
+    for (oldSpeakerID, newSpeakerID) in speakerIDMapping {
+      guard let name = previousManualNames[oldSpeakerID] else { continue }
+      remappedManualNames[newSpeakerID] = name
+      resolvedNames[newSpeakerID] = name
+      if let profileID = previousProfileIDs[oldSpeakerID] {
+        resolvedProfileIDs[newSpeakerID] = profileID
+      } else {
+        resolvedProfileIDs.removeValue(forKey: newSpeakerID)
+      }
+    }
+    manuallyAssignedSpeakerNames = remappedManualNames.isEmpty ? nil : remappedManualNames
+    speakerNames = resolvedNames.isEmpty ? nil : resolvedNames
+    speakerProfileIDs = resolvedProfileIDs.isEmpty ? nil : resolvedProfileIDs
   }
 
-  mutating func restoreLiveTranscript() -> Bool {
-    guard let liveTranscriptSnapshot else {
-      return false
+  private static func mapManuallyNamedSpeakers(
+    previousManualNames: [String: String],
+    previousEmbeddings: [String: [Float]],
+    newSpeakerIDs: Set<String>,
+    newEmbeddings: [String: [Float]]
+  ) -> [String: String] {
+    var candidates: [(similarity: Float, oldID: String, newID: String)] = []
+    for oldID in previousManualNames.keys {
+      guard let oldEmbedding = previousEmbeddings[oldID] else { continue }
+      for newID in newSpeakerIDs {
+        guard let newEmbedding = newEmbeddings[newID],
+              let similarity = SpeakerProfileMatcher.cosineSimilarity(oldEmbedding, newEmbedding)
+        else {
+          continue
+        }
+        candidates.append((similarity, oldID, newID))
+      }
     }
-    applyTranscriptSnapshot(liveTranscriptSnapshot)
-    self.liveTranscriptSnapshot = nil
-    return true
+    candidates.sort { $0.similarity > $1.similarity }
+
+    var result: [String: String] = [:]
+    var assignedNewIDs = Set<String>()
+    for candidate in candidates where candidate.similarity >= 0.60 {
+      guard result[candidate.oldID] == nil,
+            !assignedNewIDs.contains(candidate.newID)
+      else {
+        continue
+      }
+      result[candidate.oldID] = candidate.newID
+      assignedNewIDs.insert(candidate.newID)
+    }
+
+    for oldID in previousManualNames.keys
+      where result[oldID] == nil
+      && newSpeakerIDs.contains(oldID)
+      && !assignedNewIDs.contains(oldID) {
+      result[oldID] = oldID
+      assignedNewIDs.insert(oldID)
+    }
+    return result
   }
 }
 
@@ -459,6 +521,7 @@ final class MacTranscriptionController: ObservableObject {
   @Published private(set) var speakerProfiles: [SpeakerProfile]
   @Published private(set) var playingSpeakerSampleID: UUID?
   @Published private(set) var playingRecordingID: UUID?
+  @Published private(set) var playingRecordingStartTimeMS: Int64?
   @Published var isRecordingSpeakerSample = false
   @Published var isProcessingSpeakerSample = false
   @Published private(set) var speakerSampleSpeechDuration: TimeInterval = 0
@@ -1364,18 +1427,96 @@ final class MacTranscriptionController: ObservableObject {
         ]
       )
 
+    case "manual-speaker-override":
+      installUITestRecording(
+        transcript: "Original first turn. Original second turn.",
+        turns: [
+          MacSpeakerTurn(
+            speakerID: "speaker-1",
+            startTimeMS: 0,
+            endTimeMS: 3000,
+            text: "Original first turn.",
+            words: []
+          ),
+          MacSpeakerTurn(
+            speakerID: "speaker-2",
+            startTimeMS: 3000,
+            endTimeMS: 6000,
+            text: "Original second turn.",
+            words: []
+          ),
+        ],
+        names: ["speaker-1": "Jordan"]
+      )
+      recordings[0].speakerEmbeddings = [
+        "speaker-1": [1, 0],
+        "speaker-2": [0, 1],
+      ]
+      recordings[0].manuallyAssignedSpeakerNames = ["speaker-1": "Jordan"]
+      if let encoded = try? JSONEncoder().encode(recordings[0]),
+         var restored = try? JSONDecoder().decode(MacRecording.self, from: encoded) {
+        restored.replaceTranscript(with: MacTranscriptSnapshot(
+          transcript: "Updated first turn. Updated second turn.",
+          speakerTurns: [
+            MacSpeakerTurn(
+              speakerID: "cluster-a",
+              startTimeMS: 1000,
+              endTimeMS: 1400,
+              text: "Updated first turn.",
+              words: []
+            ),
+            MacSpeakerTurn(
+              speakerID: "cluster-b",
+              startTimeMS: 1400,
+              endTimeMS: 1900,
+              text: "Updated second turn.",
+              words: []
+            ),
+          ],
+          speakerNames: ["cluster-b": "Incorrect automatic match"],
+          speakerEmbeddings: [
+            "cluster-a": [0, 1],
+            "cluster-b": [1, 0],
+          ],
+          speakerProfileIDs: nil
+        ))
+        recordings[0] = restored
+        presentTranscript(restored)
+      }
+
+    case "multiple-recordings":
+      let recordingIDs = [
+        UUID(uuidString: "3C476724-2F61-4630-A237-411F9B460A76")!,
+        UUID(uuidString: "5A4D17F4-9F8F-47EF-836B-E181A6A98F01")!,
+        UUID(uuidString: "B1A70D4C-6B86-454C-8577-3506572C17B4")!,
+      ]
+      recordings = recordingIDs.enumerated().map { index, recordingID in
+        MacRecording(
+          id: recordingID,
+          createdAt: Date(timeIntervalSince1970: 1_700_000_000 + Double(index * 60)),
+          fileName: "ui-test-\(index + 1).caf",
+          duration: 10,
+          transcript: "UI test recording \(index + 1).",
+          speakerTurns: nil,
+          speakerNames: nil,
+          speakerEmbeddings: nil,
+          speakerProfileIDs: nil
+        )
+      }
+      #if DEBUG
+        for recording in recordings {
+          try? recordingStore.installUITestRecordingAudio(recording)
+        }
+      #endif
+      transcript = recordings[0].transcript
+      speakerAttributedText = transcript
+      displayedRecordingID = recordings[0].id
+
     case "offline-refined":
       installUITestRecording(
         transcript: "The refined offline transcript has improved speaker timing.",
         turns: [],
         names: [:]
-      )
-      recordings[0].liveTranscriptSnapshot = MacTranscriptSnapshot(
-        transcript: "The original live transcript is still available.",
-        speakerTurns: nil,
-        speakerNames: nil,
-        speakerEmbeddings: nil,
-        speakerProfileIDs: nil
       )
 
     case "summary-failed":
@@ -1564,7 +1705,9 @@ final class MacTranscriptionController: ObservableObject {
         statusText = resolvedAudioSourceMode.includesMeetingAudio
           ? "Opening Mac audio…"
           : "Opening microphone…"
-        let recording = try recordingStore.makeRecording()
+        var recording = try recordingStore.makeRecording()
+        recording.audioSourceMode = resolvedAudioSourceMode
+        recording.transcriptionModel = isLiveTranscriptionEnabled ? transcriptionModel : nil
         activeRecording = recording
         displayedRecordingID = nil
         resetRecordingVisualization()
@@ -1696,25 +1839,33 @@ final class MacTranscriptionController: ObservableObject {
         offlineTranscriptionRecordingID = nil
         offlineTranscriptionProgress = 0
         offlineTranscriptionTask = nil
+        statusText = isModelReady ? "Ready" : "Ready to record"
       }
 
       do {
-        if !isModelReady {
-          try await loadModel()
+        let offlineModel = MacTranscriptionModel.offlineDefault
+        if transcriptionModel != offlineModel {
+          isModelReady = false
         }
+        statusText = "Preparing Whisper for offline transcription…"
+        try await engine.loadModel(offlineModel) { [weak self] progress in
+          self?.offlineTranscriptionProgress = min(max(progress, 0), 1) * 0.2
+        }
+        isModelReady = transcriptionModel == offlineModel
+        statusText = "Transcribing offline with Whisper…"
         let snapshot = try await engine.transcribeAudioFile(
           audioURL,
           speakerProfiles: speakerProfiles
         ) { [weak self] progress in
-          self?.offlineTranscriptionProgress = min(max(progress, 0), 1)
+          self?.offlineTranscriptionProgress = 0.2 + min(max(progress, 0), 1) * 0.8
         }
         try Task.checkCancellation()
         guard let index = recordings.firstIndex(where: { $0.id == recordingID }) else {
           return
         }
 
-        recordings[index].preserveLiveTranscriptIfNeeded()
-        recordings[index].applyTranscriptSnapshot(snapshot)
+        recordings[index].replaceTranscript(with: snapshot)
+        recordings[index].transcriptionModel = offlineModel
         recordings[index].summary = nil
         presentTranscript(recordings[index])
         saveRecordingsReportingError(automaticBackupRecordingIDs: [recordingID])
@@ -1724,19 +1875,6 @@ final class MacTranscriptionController: ObservableObject {
         errorMessage = "Offline transcription failed. \(error.localizedDescription)"
       }
     }
-  }
-
-  func restoreLiveTranscript(for recordingID: UUID) {
-    guard offlineTranscriptionRecordingID != recordingID,
-          let index = recordings.firstIndex(where: { $0.id == recordingID }),
-          recordings[index].restoreLiveTranscript()
-    else {
-      return
-    }
-
-    recordings[index].summary = nil
-    presentTranscript(recordings[index])
-    saveRecordingsReportingError(automaticBackupRecordingIDs: [recordingID])
   }
 
   private func presentTranscript(_ recording: MacRecording) {
@@ -1972,13 +2110,16 @@ final class MacTranscriptionController: ObservableObject {
     }
 
     var names = recordings[recordingIndex].speakerNames ?? [:]
+    var manualNames = recordings[recordingIndex].manuallyAssignedSpeakerNames ?? [:]
     if trimmedName.isEmpty {
       names.removeValue(forKey: speakerID)
+      manualNames.removeValue(forKey: speakerID)
       var profileIDs = recordings[recordingIndex].speakerProfileIDs ?? [:]
       profileIDs.removeValue(forKey: speakerID)
       recordings[recordingIndex].speakerProfileIDs = profileIDs.isEmpty ? nil : profileIDs
     } else {
       names[speakerID] = trimmedName
+      manualNames[speakerID] = trimmedName
       if let embedding = recordings[recordingIndex].speakerEmbeddings?[speakerID] {
         let linkedProfileID = recordings[recordingIndex].speakerProfileIDs?[speakerID]
         if let profileID = SpeakerProfileMatcher.enroll(
@@ -1994,6 +2135,7 @@ final class MacTranscriptionController: ObservableObject {
       }
     }
     recordings[recordingIndex].speakerNames = names.isEmpty ? nil : names
+    recordings[recordingIndex].manuallyAssignedSpeakerNames = manualNames.isEmpty ? nil : manualNames
     if targetID == displayedRecordingID {
       speakerNames = names
       speakerProfileIDs = recordings[recordingIndex].speakerProfileIDs ?? [:]
@@ -2115,7 +2257,8 @@ final class MacTranscriptionController: ObservableObject {
       for index in recordings.indices {
         let linkedSpeakerIDs = recordings[index].speakerProfileIDs?
           .filter { $0.value == profileID }
-          .map(\.key) ?? []
+          .map(\.key)
+          .filter { recordings[index].manuallyAssignedSpeakerNames?[$0] == nil } ?? []
         guard !linkedSpeakerIDs.isEmpty else { continue }
         var names = recordings[index].speakerNames ?? [:]
         for speakerID in linkedSpeakerIDs {
@@ -2164,13 +2307,15 @@ final class MacTranscriptionController: ObservableObject {
       stopSpeakerSamplePlayback()
       stopRecordingPlayback()
       let player = try AVAudioPlayer(contentsOf: recordingStore.audioURL(for: recording))
-      player.currentTime = max(0, Double(startTimeMS) / 1000)
+      let normalizedStartTimeMS = max(startTimeMS, 0)
+      player.currentTime = min(Double(normalizedStartTimeMS) / 1000, player.duration)
       player.prepareToPlay()
       guard player.play() else {
         throw MacTranscriptionError.audioPlaybackFailed
       }
       audioPlayer = player
       playingRecordingID = recording.id
+      playingRecordingStartTimeMS = normalizedStartTimeMS
       let remainingDuration = max(0, player.duration - player.currentTime)
       recordingPlaybackTask = Task { [weak self] in
         try? await Task.sleep(for: .seconds(remainingDuration))
@@ -2191,33 +2336,70 @@ final class MacTranscriptionController: ObservableObject {
     }
   }
 
+  func togglePlayback(for recording: MacRecording, at startTimeMS: Int64) {
+    let normalizedStartTimeMS = max(startTimeMS, 0)
+    if playingRecordingID == recording.id,
+       playingRecordingStartTimeMS == normalizedStartTimeMS {
+      stopRecordingPlayback()
+    } else {
+      play(recording, at: normalizedStartTimeMS)
+    }
+  }
+
   func moveRecordingToTrash(_ recordingID: UUID) {
-    guard offlineTranscriptionRecordingID != recordingID,
-          let index = recordings.firstIndex(where: { $0.id == recordingID })
-    else {
-      return
+    moveRecordingsToTrash([recordingID])
+  }
+
+  @discardableResult
+  func moveRecordingsToTrash(_ recordingIDs: Set<UUID>) -> Set<UUID> {
+    let eligibleRecordings = recordings.filter {
+      recordingIDs.contains($0.id) && offlineTranscriptionRecordingID != $0.id
+    }
+    guard !eligibleRecordings.isEmpty else { return [] }
+
+    var removedIDs = Set<UUID>()
+    var failures: [Error] = []
+    for recording in eligibleRecordings {
+      let audioURL = recordingStore.audioURL(for: recording)
+      do {
+        if FileManager.default.fileExists(atPath: audioURL.path) {
+          try FileManager.default.trashItem(at: audioURL, resultingItemURL: nil)
+        }
+        removedIDs.insert(recording.id)
+      } catch {
+        failures.append(error)
+      }
     }
 
-    let recording = recordings[index]
-    let audioURL = recordingStore.audioURL(for: recording)
-    do {
-      if FileManager.default.fileExists(atPath: audioURL.path) {
-        try FileManager.default.trashItem(at: audioURL, resultingItemURL: nil)
+    guard !removedIDs.isEmpty else {
+      if let failure = failures.first {
+        errorMessage = "The selected recordings could not be moved to the Trash. \(failure.localizedDescription)"
       }
-      if playingRecordingID == recordingID {
-        stopRecordingPlayback()
-      }
+      return []
+    }
+
+    if let playingRecordingID, removedIDs.contains(playingRecordingID) {
+      stopRecordingPlayback()
+    }
+    for recordingID in removedIDs {
       summaryTasks[recordingID]?.cancel()
       summaryTasks[recordingID] = nil
       summaryTaskTokens[recordingID] = nil
-      recordings.remove(at: index)
-      if displayedRecordingID == recordingID {
-        clearTranscript()
-      }
+    }
+    recordings.removeAll { removedIDs.contains($0.id) }
+    if let displayedRecordingID, removedIDs.contains(displayedRecordingID) {
+      clearTranscript()
+    }
+
+    do {
       try recordingStore.save(recordings)
     } catch {
-      errorMessage = "The recording could not be moved to the Trash. \(error.localizedDescription)"
+      failures.append(error)
     }
+    if let failure = failures.first {
+      errorMessage = "Some selected recordings could not be moved to the Trash. \(failure.localizedDescription)"
+    }
+    return removedIDs
   }
 
   func hasSpeakerSample(_ profileID: UUID) -> Bool {
@@ -2268,6 +2450,7 @@ final class MacTranscriptionController: ObservableObject {
     audioPlayer?.stop()
     audioPlayer = nil
     playingRecordingID = nil
+    playingRecordingStartTimeMS = nil
   }
 
   private func loadModel() async throws {
@@ -2457,8 +2640,8 @@ private struct MacRecordingStore: Sendable {
       }
       let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
       let file = try AVAudioFile(forWriting: recordingURL, settings: format.settings)
-      let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32000)!
-      buffer.frameLength = 32000
+      let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 160_000)!
+      buffer.frameLength = 160_000
       try file.write(from: buffer)
     }
 
@@ -2725,8 +2908,6 @@ private actor MacTranscriptionEngine {
       diarization: diarization.intervals
     )
     try Task.checkCancellation()
-    let restoredText = SpeakerAttributionCore.joinTranscript(turns.map(\.text))
-    let finalText = restoredText.isEmpty ? transcription.text : restoredText
     let matches = SpeakerProfileMatcher.matches(
       speakerEmbeddingCandidates: diarization.speakerEmbeddingCandidates,
       profiles: speakerProfiles,
@@ -2736,7 +2917,7 @@ private actor MacTranscriptionEngine {
     await progressHandler(1)
 
     return MacTranscriptSnapshot(
-      transcript: finalText,
+      transcript: transcription.text,
       speakerTurns: turns.isEmpty ? nil : turns,
       speakerNames: matches.isEmpty ? nil : matches.mapValues(\.name),
       speakerEmbeddings: diarization.speakerEmbeddings.isEmpty
@@ -2777,7 +2958,10 @@ private actor MacTranscriptionEngine {
     }
     try await parakeetModel.reset()
     let batchSize = Int(Self.sampleRate)
+    let alignmentCheckpointSampleCount = Int(Self.sampleRate * 25)
+    let transcriptTimeline = MacConfirmedTranscriptTimeline()
     var processedSamples = 0
+    var nextAlignmentCheckpoint = alignmentCheckpointSampleCount
     while processedSamples < samples.count {
       try Task.checkCancellation()
       let end = min(processedSamples + batchSize, samples.count)
@@ -2785,6 +2969,19 @@ private actor MacTranscriptionEngine {
       try await parakeetModel.appendAudio(buffer)
       try await parakeetModel.processBufferedAudio()
       processedSamples = end
+      if processedSamples >= nextAlignmentCheckpoint || processedSamples == samples.count {
+        let partialText = await parakeetModel.getPartialTranscript()
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        transcriptTimeline.update(
+          text: partialText,
+          audioEndTimeMS: Int64(
+            (Double(processedSamples) / Self.sampleRate * 1000).rounded()
+          )
+        )
+        while nextAlignmentCheckpoint <= processedSamples {
+          nextAlignmentCheckpoint += alignmentCheckpointSampleCount
+        }
+      }
       let fraction = Double(processedSamples) / Double(samples.count)
       await progressHandler(0.05 + fraction * 0.55)
     }
@@ -2792,13 +2989,19 @@ private actor MacTranscriptionEngine {
     let text = try await parakeetModel.finish()
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let duration = Double(samples.count) / Self.sampleRate
-    let chunk = MacTranscriptionChunk(
+    transcriptTimeline.update(
       text: text,
-      startTimeMS: 0,
-      endTimeMS: Int64((duration * 1000).rounded()),
-      language: "English"
+      audioEndTimeMS: Int64((duration * 1000).rounded())
     )
-    return OfflineTranscription(text: text, chunks: text.isEmpty ? [] : [chunk])
+    let chunks = transcriptTimeline.snapshot().chunks.map {
+      MacTranscriptionChunk(
+        text: $0.text,
+        startTimeMS: $0.startTimeMS,
+        endTimeMS: $0.endTimeMS,
+        language: "English"
+      )
+    }
+    return OfflineTranscription(text: text, chunks: chunks)
   }
 
   private func transcribeOfflineWithQwen(
@@ -3122,7 +3325,12 @@ private actor MacTranscriptionEngine {
       eventTask = nil
 
       let finalText = streamingTranscriptState.resolvedText()
-      let checkpoint = checkpointState.snapshot()
+      let checkpoint = checkpointState.snapshot().flatMap { checkpoint in
+        SpeakerAttributionCore.hasSufficientAlignmentCoverage(
+          transcript: finalText,
+          alignedWordTexts: checkpoint.speakerTurns.flatMap { $0.words.map(\.text) }
+        ) ? checkpoint : nil
+      }
       if let eventHandler {
         await eventHandler(.stopped(MacFinalTranscription(
           text: finalText,

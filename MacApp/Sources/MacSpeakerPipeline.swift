@@ -12,6 +12,28 @@ struct MacTranscriptionChunk: Sendable {
   let startTimeMS: Int64
   let endTimeMS: Int64
   let language: String?
+
+  func bounded(maxDurationMS: Int64) -> [MacTranscriptionChunk] {
+    let durationMS = endTimeMS - startTimeMS
+    guard maxDurationMS > 0, durationMS > maxDurationMS else { return [self] }
+
+    let partCount = Int(ceil(Double(durationMS) / Double(maxDurationMS)))
+    let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
+    guard words.count >= partCount else { return [] }
+
+    return (0 ..< partCount).compactMap { index in
+      let wordStart = words.count * index / partCount
+      let wordEnd = words.count * (index + 1) / partCount
+      guard wordEnd > wordStart else { return nil }
+
+      return MacTranscriptionChunk(
+        text: words[wordStart ..< wordEnd].joined(separator: " "),
+        startTimeMS: startTimeMS + durationMS * Int64(index) / Int64(partCount),
+        endTimeMS: startTimeMS + durationMS * Int64(index + 1) / Int64(partCount),
+        language: language
+      )
+    }
+  }
 }
 
 // MARK: - MacSpeakerWord
@@ -53,6 +75,8 @@ struct MacSpeakerDiarizationResult: Sendable {
 // MARK: - MacSpeakerPipeline
 
 actor MacSpeakerPipeline {
+  private static let maximumAlignmentChunkDurationMS: Int64 = 30000
+
   private let forcedAligner: MacForcedAlignmentEngine
   private let diarizer = MacFluidAudioDiarizer()
 
@@ -83,7 +107,18 @@ actor MacSpeakerPipeline {
     chunks: [MacTranscriptionChunk],
     diarization: [SpeakerAttributionInterval]
   ) async throws -> [MacSpeakerTurn] {
-    let words = try await forcedAligner.align(samples: samples, chunks: chunks)
+    let boundedChunks = chunks.flatMap {
+      $0.bounded(maxDurationMS: Self.maximumAlignmentChunkDurationMS)
+    }
+    guard !boundedChunks.isEmpty else { return [] }
+
+    let words = try await forcedAligner.align(samples: samples, chunks: boundedChunks)
+    guard SpeakerAttributionCore.hasSufficientAlignmentCoverage(
+      transcript: transcript,
+      alignedWordTexts: words.map(\.text)
+    ) else {
+      return []
+    }
     return SpeakerAttributionCore.merge(
       transcript: transcript,
       words: words,

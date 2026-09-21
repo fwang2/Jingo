@@ -49,7 +49,7 @@ Both paths use Qwen forced alignment to place words on the timeline and FluidAud
 
 On Mac, Parakeet Unified EN is optimized for real-time English with punctuation and capitalization and is selected for new installations. The selectable Qwen and Whisper engines also constrain decoding to English for lower language-selection overhead and more stable English output. The iPhone and iPad Qwen pipeline remains multilingual.
 
-For a saved Mac recording, choose **Transcribe Offline** or **Refine Offline** from its actions menu. Jingo reprocesses the complete audio, performs forced alignment and diarization, and replaces the displayed live result. When a live transcript existed, it is retained until you choose **Restore Live Transcript**.
+For a saved Mac recording, choose **Transcribe Offline** or **Retranscribe Offline** from its actions menu. Jingo uses Whisper Large-v3-Turbo by default to reprocess the complete audio, performs bounded forced alignment and diarization, and replaces the live result. If speaker alignment is incomplete, Jingo keeps the complete raw transcript instead of displaying misleading partial speaker turns. Once text is available, the recording's **Transcript** link opens it in a tab beside the recordings list. The transcript records which model and audio source produced it. Manual speaker-name corrections stay attached to that transcript and take precedence over automatic voice matching.
 
 ## Privacy and Model Downloads
 
@@ -59,7 +59,7 @@ Known-speaker voice samples are stored locally. A sample needs at least six seco
 
 ## Local Meeting Summaries on Mac
 
-Jingo creates a summary when you choose **Create Summary** from an expanded recording card. The separate Qwen3 4B Instruct model runs through MLX on Apple silicon and can be downloaded from **Settings → Meeting Summaries**.
+Jingo creates a summary when you choose **Create Summary** from a recording's transcript tab. The separate Qwen3 4B Instruct model runs through MLX on Apple silicon and can be downloaded from **Settings → Meeting Summaries**.
 
 Summary detail scales with the recording duration and transcript density. Brief recordings receive a correspondingly short result, while substantive meetings can include:
 
