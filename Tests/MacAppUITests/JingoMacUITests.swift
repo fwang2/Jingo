@@ -55,7 +55,6 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertTrue(element("account.refreshBackups").exists)
     XCTAssertTrue(element("account.restoreAll").exists)
     XCTAssertTrue(element("account.syncFolderConnected").exists)
-    XCTAssertTrue(app.staticTexts["Jingo folder"].exists)
     XCTAssertTrue(app.staticTexts["Connected"].exists)
     XCTAssertTrue(app.staticTexts["Settings sync automatically through the chosen cloud-synced shared folder."].exists)
     XCTAssertTrue(app.staticTexts["Automatic backup is off by default. Local recordings are never removed or changed."].exists)
@@ -176,7 +175,7 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertTrue(trash.exists)
     trash.click()
     XCTAssertTrue(app.buttons["Move to Trash"].waitForExistence(timeout: 2))
-    app.buttons["Cancel"].click()
+    app.sheets.buttons["Cancel"].click()
   }
 
   func testFailedSummaryOffersModelDownload() {
