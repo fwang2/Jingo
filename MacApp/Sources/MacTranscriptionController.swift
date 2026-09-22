@@ -3228,15 +3228,27 @@ private actor MacTranscriptionEngine {
       failureHandler: transcriptionFailureHandler
     )
     let mixer = MacRealtimeAudioMixer()
+    let combinesAudioSources = audioSourceMode.combinesAudioSources
+    let chunkHandler: @Sendable (MacCapturedAudioChunk) -> Void = { chunk in
+      if combinesAudioSources {
+        mixer.append(chunk)
+      } else {
+        consumer.consume(chunk.samples)
+      }
+    }
+
+    if combinesAudioSources {
+      mixer.start { samples in
+        consumer.consume(samples)
+      }
+    }
 
     do {
       if audioSourceMode.includesMeetingAudio {
         let capture = MacSystemAudioCapture()
         systemAudioCapture = capture
         try await capture.start(
-          chunkHandler: { chunk in
-            mixer.append(chunk)
-          },
+          chunkHandler: chunkHandler,
           failureHandler: transcriptionFailureHandler
         )
       }
@@ -3260,7 +3272,7 @@ private actor MacTranscriptionEngine {
             let converted = try Self.resampleBuffer(inputBuffer, with: converter)
             let samples = Self.samples(from: converted)
             let duration = Double(samples.count) / Self.sampleRate
-            mixer.append(MacCapturedAudioChunk(
+            chunkHandler(MacCapturedAudioChunk(
               source: .microphone,
               samples: samples,
               startUptime: ProcessInfo.processInfo.systemUptime - duration
@@ -3297,12 +3309,8 @@ private actor MacTranscriptionEngine {
       throw error
     }
 
-    mixer.start { samples in
-      consumer.consume(samples)
-    }
-
     self.session = session
-    audioMixer = mixer
+    audioMixer = combinesAudioSources ? mixer : nil
     mixedAudioConsumer = consumer
     self.recordingURL = recordingURL
     if isParakeetSessionActive || session != nil || isWhisperSessionActive {

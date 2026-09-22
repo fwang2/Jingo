@@ -14,7 +14,7 @@ struct MacContentView: View {
   @State private var selectedRecordingIDs: Set<UUID> = []
   @State private var batchTrashConfirmationIsPresented = false
   @State private var profileToForget: SpeakerProfile?
-  @State private var profileToRename: SpeakerProfile?
+  @State private var editingSpeakerProfileID: UUID?
   @State private var speakerEnrollmentRequest: SpeakerEnrollmentRequest?
   @State private var speakerEnrollmentName = ""
   @State private var speakerRenameRequest: SpeakerRenameRequest?
@@ -22,11 +22,14 @@ struct MacContentView: View {
   @State private var speakerProfileNameDraft = ""
   @State private var transcriptIsNearBottom = true
   @State private var summaryInstructionsTab: SummaryInstructionsTab = .edit
+
   #if DEBUG
     @State private var developerBenchmarkResult: MacDeveloperBenchmarkResult?
     @State private var developerBenchmarkError: String?
     @State private var developerReportIsExpanded = false
   #endif
+
+  @FocusState private var focusedSpeakerProfileID: UUID?
 
   var body: some View {
     HStack(spacing: 0) {
@@ -55,6 +58,15 @@ struct MacContentView: View {
       }
       controller.refreshSyncFolderIfNeeded()
     }
+    .onChange(of: focusedSpeakerProfileID) { oldValue, newValue in
+      guard let editingSpeakerProfileID,
+            oldValue == editingSpeakerProfileID,
+            newValue != editingSpeakerProfileID
+      else {
+        return
+      }
+      finishSpeakerProfileRename()
+    }
     .alert("Jingo Error", isPresented: errorIsPresented) {
       Button("OK") { controller.errorMessage = nil }
     } message: {
@@ -75,18 +87,6 @@ struct MacContentView: View {
       }
     } message: {
       Text("This correction stays with this transcript and also helps recognize the speaker in future recordings.")
-    }
-    .alert("Rename Known Speaker", isPresented: renameProfileIsPresented) {
-      TextField("Name", text: $speakerProfileNameDraft)
-        .accessibilityIdentifier("speakerProfile.renameField")
-      Button("Cancel", role: .cancel) {}
-      Button("Save") {
-        guard let profileToRename else { return }
-        controller.renameSpeakerProfile(profileToRename.id, to: speakerProfileNameDraft)
-        self.profileToRename = nil
-      }
-    } message: {
-      Text("This changes the name in every linked recording.")
     }
     .confirmationDialog(
       "Forget \(profileToForget?.name ?? "this speaker")?",
@@ -363,11 +363,17 @@ struct MacContentView: View {
         )
 
       VStack(spacing: 6) {
-        Text(controller.isRecording ? "Listening…" : "Ready when you are")
-          .font(.title3.weight(.semibold))
         Text(
           controller.isRecording
-            ? "Your words will appear here as they’re transcribed."
+            ? controller.isLiveTranscriptionEnabled ? "Listening…" : "Recording…"
+            : "Ready when you are"
+        )
+        .font(.title3.weight(.semibold))
+        Text(
+          controller.isRecording
+            ? controller.isLiveTranscriptionEnabled
+              ? "Your words will appear here as they’re transcribed."
+              : "Audio is being recorded without live transcription."
             : "Press Record to begin a private, on-device transcript."
         )
         .font(.subheadline)
@@ -1738,8 +1744,27 @@ struct MacContentView: View {
                   .foregroundStyle(Color.accentColor)
                   .frame(width: 28)
 
-                Text(profile.name)
-                  .font(.body.weight(.medium))
+                if editingSpeakerProfileID == profile.id {
+                  TextField("Speaker name", text: $speakerProfileNameDraft)
+                    .textFieldStyle(.plain)
+                    .font(.body.weight(.medium))
+                    .focused($focusedSpeakerProfileID, equals: profile.id)
+                    .onSubmit {
+                      finishSpeakerProfileRename()
+                    }
+                    .onExitCommand {
+                      cancelSpeakerProfileRename()
+                    }
+                    .accessibilityIdentifier("speakerProfile.renameField.\(profile.id.uuidString)")
+                } else {
+                  Text(profile.name)
+                    .font(.body.weight(.medium))
+                    .onTapGesture(count: 2) {
+                      beginSpeakerProfileRename(profile)
+                    }
+                    .help("Double-click to rename")
+                    .accessibilityIdentifier("speakerProfile.name.\(profile.id.uuidString)")
+                }
 
                 Spacer()
 
@@ -1759,10 +1784,6 @@ struct MacContentView: View {
                 Menu {
                   Button("Add Voice Sample", systemImage: "mic.badge.plus") {
                     beginSpeakerEnrollment(profile: profile)
-                  }
-                  Button("Rename", systemImage: "pencil") {
-                    speakerProfileNameDraft = profile.name
-                    profileToRename = profile
                   }
                   Divider()
                   Button("Forget Speaker", systemImage: "person.crop.circle.badge.minus", role: .destructive) {
@@ -2245,18 +2266,6 @@ struct MacContentView: View {
     )
   }
 
-  private var renameProfileIsPresented: Binding<Bool> {
-    Binding(
-      get: { profileToRename != nil },
-      set: {
-        if !$0 {
-          profileToRename = nil
-          speakerProfileNameDraft = ""
-        }
-      }
-    )
-  }
-
   private var forgetProfileIsPresented: Binding<Bool> {
     Binding(
       get: { profileToForget != nil },
@@ -2283,6 +2292,29 @@ struct MacContentView: View {
     controller.speakerProfiles.sorted {
       $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
     }
+  }
+
+  private func beginSpeakerProfileRename(_ profile: SpeakerProfile) {
+    speakerProfileNameDraft = profile.name
+    editingSpeakerProfileID = profile.id
+    focusedSpeakerProfileID = profile.id
+  }
+
+  private func finishSpeakerProfileRename() {
+    guard let editingSpeakerProfileID else {
+      return
+    }
+    let name = speakerProfileNameDraft
+    self.editingSpeakerProfileID = nil
+    focusedSpeakerProfileID = nil
+    speakerProfileNameDraft = ""
+    controller.renameSpeakerProfile(editingSpeakerProfileID, to: name)
+  }
+
+  private func cancelSpeakerProfileRename() {
+    editingSpeakerProfileID = nil
+    focusedSpeakerProfileID = nil
+    speakerProfileNameDraft = ""
   }
 
   private func beginSpeakerEnrollment(profile: SpeakerProfile?) {

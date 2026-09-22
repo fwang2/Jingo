@@ -121,6 +121,12 @@ The simulator is useful for interface and unit tests, but Qwen and FluidAudio in
 
 The project includes model-independent unit tests, speaker attribution and execution-policy tests, physical-device inference tests, iOS snapshots, and Mac UI tests.
 
+Run tests against the existing generated workspace with `xcodebuild test` or `mise exec -- tuist xcodebuild test`. Do not run `tuist test` in the working checkout: filtered test runs regenerate the workspace around the selected test graph and temporarily remove unrelated schemes such as `JingoMac`. If that happens, restore the complete workspace with:
+
+```sh
+mise exec -- tuist generate --no-open
+```
+
 For the Mac app:
 
 ```sh

@@ -39,6 +39,10 @@ final class MacAudioCaptureTests: XCTestCase {
     XCTAssertTrue(MacAudioSourceMode.meetingAudio.includesMeetingAudio)
     XCTAssertTrue(MacAudioSourceMode.meetingAndMicrophone.includesMicrophone)
     XCTAssertTrue(MacAudioSourceMode.meetingAndMicrophone.includesMeetingAudio)
+    XCTAssertFalse(MacAudioSourceMode.automatic.combinesAudioSources)
+    XCTAssertFalse(MacAudioSourceMode.microphone.combinesAudioSources)
+    XCTAssertFalse(MacAudioSourceMode.meetingAudio.combinesAudioSources)
+    XCTAssertTrue(MacAudioSourceMode.meetingAndMicrophone.combinesAudioSources)
   }
 
   func testAutomaticAudioSourceModeResolvesForMeetingPresence() {

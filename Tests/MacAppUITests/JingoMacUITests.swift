@@ -329,7 +329,18 @@ final class JingoMacUITests: XCTestCase {
     expectation(for: playing, evaluatedWith: playSample)
     waitForExpectations(timeout: 2)
 
-    element("speakerProfile.manage.B29365B1-5DE8-416F-B5F8-92D44834FCF8").click()
+    let profileID = "B29365B1-5DE8-416F-B5F8-92D44834FCF8"
+    let speakerName = element("speakerProfile.name.\(profileID)")
+    XCTAssertTrue(speakerName.exists)
+    speakerName.doubleClick()
+    let renameField = element("speakerProfile.renameField.\(profileID)")
+    XCTAssertTrue(renameField.waitForExistence(timeout: 2))
+    renameField.typeKey("a", modifierFlags: .command)
+    renameField.typeText("Jordan")
+    element("speakerProfiles.title").click()
+    XCTAssertTrue(app.staticTexts["Jordan"].waitForExistence(timeout: 2))
+
+    element("speakerProfile.manage.\(profileID)").click()
     app.menuItems["Add Voice Sample"].click()
     let addVoiceSampleButton = element("speakerEnrollment.record")
     XCTAssertTrue(addVoiceSampleButton.waitForExistence(timeout: 2))

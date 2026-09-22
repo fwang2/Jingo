@@ -51,6 +51,10 @@ enum MacAudioSourceMode: String, CaseIterable, Codable, Identifiable, Sendable {
     }
   }
 
+  var combinesAudioSources: Bool {
+    includesMicrophone && includesMeetingAudio
+  }
+
   func resolved(detectedMeeting: Bool) -> Self {
     guard self == .automatic else {
       return self
