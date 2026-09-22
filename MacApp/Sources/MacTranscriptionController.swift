@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Combine
+import CoreGraphics
 import FluidAudio
 import Foundation
 import HuggingFace
@@ -460,55 +461,154 @@ private actor MacSpeakerSampleRecorder {
   private static let averageSpeechThresholdDB: Float = -45
   private static let peakSpeechThresholdDB: Float = -35
 
-  private var recorder: AVAudioRecorder?
+  struct MeterSnapshot: Sendable {
+    let isVoiceActive: Bool
+    let level: Float
+  }
+
+  private var audioEngine: AVAudioEngine?
+  private var sampleWriter: MacSpeakerSampleWriter?
   private var recordingURL: URL?
 
-  func start() throws {
+  func start(microphoneDeviceUID: String) async throws {
     cancel()
     let recordingURL = FileManager.default.temporaryDirectory
       .appendingPathComponent("jingo-speaker-sample-\(UUID().uuidString).caf")
-    let recorder = try AVAudioRecorder(
-      url: recordingURL,
-      settings: [
-        AVFormatIDKey: kAudioFormatLinearPCM,
-        AVSampleRateKey: 16000,
-        AVNumberOfChannelsKey: 1,
-        AVLinearPCMBitDepthKey: 16,
-        AVLinearPCMIsFloatKey: false,
-        AVLinearPCMIsBigEndianKey: false,
-      ]
-    )
-    recorder.isMeteringEnabled = true
-    recorder.prepareToRecord()
-    guard recorder.record() else {
-      throw MacTranscriptionError.audioRecordingFailed
+    let engine = AVAudioEngine()
+    let preferredDeviceUID = if microphoneDeviceUID.isEmpty {
+      try await MacAudioInputDeviceManager.activeAutomaticInputDevice().uid
+    } else {
+      microphoneDeviceUID
     }
-    self.recorder = recorder
+    _ = try MacAudioInputDeviceManager.configureInput(
+      of: engine,
+      preferredDeviceUID: preferredDeviceUID
+    )
+    let inputNode = engine.inputNode
+    let inputFormat = inputNode.outputFormat(forBus: 0)
+    guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+      throw MacTranscriptionError.invalidMicrophoneFormat
+    }
+    let writer = try MacSpeakerSampleWriter(
+      recordingURL: recordingURL,
+      format: inputFormat,
+      averageSpeechThresholdDB: Self.averageSpeechThresholdDB,
+      peakSpeechThresholdDB: Self.peakSpeechThresholdDB
+    )
+    inputNode.installTap(
+      onBus: 0,
+      bufferSize: 1024,
+      format: inputFormat
+    ) { buffer, _ in
+      writer.consume(buffer)
+    }
+    engine.prepare()
+    try engine.start()
+
+    audioEngine = engine
+    sampleWriter = writer
     self.recordingURL = recordingURL
   }
 
-  func isVoiceActive() -> Bool {
-    guard let recorder, recorder.isRecording else { return false }
-    recorder.updateMeters()
-    return recorder.averagePower(forChannel: 0) >= Self.averageSpeechThresholdDB
-      || recorder.peakPower(forChannel: 0) >= Self.peakSpeechThresholdDB
+  func meterSnapshot() -> MeterSnapshot {
+    sampleWriter?.snapshot() ?? MeterSnapshot(isVoiceActive: false, level: 0)
   }
 
   func stop() -> URL? {
-    recorder?.stop()
-    recorder = nil
+    stopEngine()
     defer { recordingURL = nil }
     return recordingURL
   }
 
   func cancel() {
-    recorder?.stop()
-    recorder = nil
+    stopEngine()
     if let recordingURL {
       try? FileManager.default.removeItem(at: recordingURL)
     }
     recordingURL = nil
   }
+
+  private func stopEngine() {
+    audioEngine?.inputNode.removeTap(onBus: 0)
+    audioEngine?.stop()
+    audioEngine?.reset()
+    audioEngine = nil
+    sampleWriter = nil
+  }
+}
+
+// MARK: - MacSpeakerSampleWriter
+
+private final class MacSpeakerSampleWriter: @unchecked Sendable {
+  private let lock = NSLock()
+  private let audioFile: AVAudioFile
+  private let averageSpeechThresholdDB: Float
+  private let peakSpeechThresholdDB: Float
+  private var latestSnapshot = MacSpeakerSampleRecorder.MeterSnapshot(
+    isVoiceActive: false,
+    level: 0
+  )
+
+  init(
+    recordingURL: URL,
+    format: AVAudioFormat,
+    averageSpeechThresholdDB: Float,
+    peakSpeechThresholdDB: Float
+  ) throws {
+    audioFile = try AVAudioFile(forWriting: recordingURL, settings: format.settings)
+    self.averageSpeechThresholdDB = averageSpeechThresholdDB
+    self.peakSpeechThresholdDB = peakSpeechThresholdDB
+  }
+
+  func consume(_ buffer: AVAudioPCMBuffer) {
+    let snapshot = Self.meterSnapshot(
+      buffer,
+      averageSpeechThresholdDB: averageSpeechThresholdDB,
+      peakSpeechThresholdDB: peakSpeechThresholdDB
+    )
+    lock.withLock {
+      try? audioFile.write(from: buffer)
+      latestSnapshot = snapshot
+    }
+  }
+
+  func snapshot() -> MacSpeakerSampleRecorder.MeterSnapshot {
+    lock.withLock { latestSnapshot }
+  }
+
+  private static func meterSnapshot(
+    _ buffer: AVAudioPCMBuffer,
+    averageSpeechThresholdDB: Float,
+    peakSpeechThresholdDB: Float
+  ) -> MacSpeakerSampleRecorder.MeterSnapshot {
+    guard let channel = buffer.floatChannelData?.pointee else {
+      return .init(isVoiceActive: false, level: 0)
+    }
+    let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
+    guard !samples.isEmpty else {
+      return .init(isVoiceActive: false, level: 0)
+    }
+
+    var sumOfSquares: Float = 0
+    var peak: Float = 0
+    for sample in samples {
+      sumOfSquares += sample * sample
+      peak = max(peak, abs(sample))
+    }
+    let averageDB = 20 * log10(max(sqrt(sumOfSquares / Float(samples.count)), 0.000_001))
+    let peakDB = 20 * log10(max(peak, 0.000_001))
+    return .init(
+      isVoiceActive: averageDB >= averageSpeechThresholdDB || peakDB >= peakSpeechThresholdDB,
+      level: min(max((peakDB + 60) / 60, 0), 1)
+    )
+  }
+}
+
+// MARK: - MacMicrophonePermissionContinuation
+
+private enum MacMicrophonePermissionContinuation {
+  case recording
+  case speakerSample
 }
 
 // MARK: - MacTranscriptionController
@@ -529,6 +629,31 @@ final class MacTranscriptionController: ObservableObject {
   @Published var isProcessingSpeakerSample = false
   @Published private(set) var speakerSampleSpeechDuration: TimeInterval = 0
   @Published private(set) var isSpeakerSampleVoiceActive = false
+  @Published private(set) var speakerSampleInputLevel: Float = 0
+  @Published private(set) var microphoneInputDevices: [MacAudioInputDevice] = []
+  @Published var selectedMicrophoneDeviceUID = "" {
+    didSet {
+      activeAudioInputDescription = nil
+      UserDefaults.standard.set(
+        selectedMicrophoneDeviceUID,
+        forKey: Self.microphoneDeviceUIDDefaultsKey
+      )
+      UserDefaults.standard.set(
+        !selectedMicrophoneDeviceUID.isEmpty,
+        forKey: Self.microphoneOverrideEnabledDefaultsKey
+      )
+      if let device = microphoneInputDevices.first(where: {
+        $0.uid == selectedMicrophoneDeviceUID
+      }) {
+        UserDefaults.standard.set(
+          device.name,
+          forKey: Self.microphoneDeviceNameDefaultsKey
+        )
+      }
+    }
+  }
+
+  @Published private(set) var activeAudioInputDescription: String?
   @Published var statusText = "Preparing transcription model…"
   @Published var downloadProgress = 0.0
   @Published var isLoadingModel = false
@@ -541,6 +666,7 @@ final class MacTranscriptionController: ObservableObject {
   @Published private(set) var recentWaveformLevels: [Float] = []
   @Published var audioSourceMode: MacAudioSourceMode {
     didSet {
+      activeAudioInputDescription = nil
       UserDefaults.standard.set(audioSourceMode.rawValue, forKey: Self.audioSourceModeDefaultsKey)
     }
   }
@@ -650,6 +776,10 @@ final class MacTranscriptionController: ObservableObject {
   @Published private(set) var summaryModelDownloadProgress = 0.0
 
   @Published var errorMessage: String?
+  @Published var macAudioPermissionPromptIsPresented = false
+  @Published private(set) var macAudioPermissionRequiresRestart = false
+  @Published var microphonePermissionPromptIsPresented = false
+  @Published private(set) var microphonePermissionRequiresRestart = false
 
   static let transcriptFontSizeRange = 11.0 ... 24.0
   static let requiredSpeakerSampleSpeechDuration: TimeInterval = 10
@@ -657,6 +787,9 @@ final class MacTranscriptionController: ObservableObject {
 
   private static let liveTranscriptionDefaultsKey = "mac.liveTranscriptionEnabled"
   private static let audioSourceModeDefaultsKey = "mac.audioSourceMode"
+  private static let microphoneDeviceUIDDefaultsKey = "mac.microphoneDeviceUID"
+  private static let microphoneDeviceNameDefaultsKey = "mac.microphoneDeviceName"
+  private static let microphoneOverrideEnabledDefaultsKey = "mac.microphoneOverrideEnabled"
   private static let transcriptionModelDefaultsKey = "mac.transcriptionModel"
   private static let handsFreeModeDefaultsKey = "mac.handsFreeModeEnabled"
   private static let transcriptFontSizeDefaultsKey = "mac.transcriptFontSize"
@@ -699,6 +832,11 @@ final class MacTranscriptionController: ObservableObject {
   private var activeRecording: MacRecording?
   private var displayedRecordingID: UUID?
   private var recordingStartedAt: Date?
+  private var isRecordingPendingMacAudioPermission = false
+  private var didOpenMacAudioPermissionSettings = false
+  private var nextRecordingAudioSourceOverride: MacAudioSourceMode?
+  private var pendingMicrophonePermissionContinuation: MacMicrophonePermissionContinuation?
+  private var didOpenMicrophonePermissionSettings = false
 
   init(
     syncFolderAccess: MacSyncFolderAccess? = nil,
@@ -725,9 +863,18 @@ final class MacTranscriptionController: ObservableObject {
       ? Self.markInterruptedSummaries(in: recordingStore.load())
       : []
     speakerProfiles = uiTestScenario == nil ? recordingStore.loadSpeakerProfiles() : []
+    selectedMicrophoneDeviceUID = if uiTestScenario == nil,
+                                     UserDefaults.standard.bool(
+                                       forKey: Self.microphoneOverrideEnabledDefaultsKey
+                                     ) {
+      UserDefaults.standard.string(forKey: Self.microphoneDeviceUIDDefaultsKey) ?? ""
+    } else {
+      ""
+    }
     audioSourceMode = uiTestScenario == nil
       ? UserDefaults.standard.string(forKey: Self.audioSourceModeDefaultsKey)
-        .flatMap(MacAudioSourceMode.init(rawValue:)) ?? .automatic
+        .flatMap(MacAudioSourceMode.init(rawValue:))
+        .map { $0 == .meetingAudio ? .meetingAndMicrophone : $0 } ?? .automatic
       : .automatic
     transcriptionModel = uiTestScenario == nil
       ? UserDefaults.standard.string(forKey: Self.transcriptionModelDefaultsKey)
@@ -775,6 +922,7 @@ final class MacTranscriptionController: ObservableObject {
     syncSettingsStatusText = syncFolderStatus.isAvailable
       ? "Settings synced"
       : "Settings remain saved on this Mac"
+    refreshMicrophoneInputDevices()
 
     if let uiTestScenario {
       configureUITestScenario(uiTestScenario)
@@ -800,6 +948,46 @@ final class MacTranscriptionController: ObservableObject {
       return
     }
     scheduleSyncSettings(delay: nil)
+  }
+
+  var selectedMicrophoneDisplayName: String {
+    if selectedMicrophoneDeviceUID.isEmpty {
+      let automaticName = MacAudioInputDeviceManager.automaticInputDevice(
+        from: microphoneInputDevices
+      )?.name ?? "No microphone"
+      return "Automatic — \(automaticName)"
+    }
+    if let device = microphoneInputDevices.first(where: {
+      $0.uid == selectedMicrophoneDeviceUID
+    }) {
+      return device.name
+    }
+    let storedName = UserDefaults.standard.string(
+      forKey: Self.microphoneDeviceNameDefaultsKey
+    ) ?? "Selected microphone"
+    return "\(storedName) — Disconnected"
+  }
+
+  var liveTranscriptAudioSubtitle: String {
+    if let activeAudioInputDescription {
+      return "Audio input: \(activeAudioInputDescription)"
+    }
+
+    let microphoneDescription = selectedMicrophoneDeviceUID.isEmpty
+      ? "Automatic microphone selection"
+      : selectedMicrophoneDisplayName
+    switch audioSourceMode {
+    case .automatic, .microphone:
+      return "Audio input: \(microphoneDescription)"
+    case .meetingAudio:
+      return "Audio input: Mac audio"
+    case .meetingAndMicrophone:
+      return "Audio input: Mac audio + \(microphoneDescription)"
+    }
+  }
+
+  func refreshMicrophoneInputDevices() {
+    microphoneInputDevices = MacAudioInputDeviceManager.availableInputDevices()
   }
 
   func chooseSyncFolder() {
@@ -1364,6 +1552,7 @@ final class MacTranscriptionController: ObservableObject {
       isRecording = true
       recordingElapsedTime = 9
       recentWaveformLevels = Self.previewWaveformLevels
+      activeAudioInputDescription = "Logitech Webcam C930e"
       statusText = "Listening and transcribing…"
 
     case "checkpoint":
@@ -1388,6 +1577,7 @@ final class MacTranscriptionController: ObservableObject {
       isRecording = true
       recordingElapsedTime = 9
       recentWaveformLevels = Self.previewWaveformLevels
+      activeAudioInputDescription = "Mac audio + Logitech Webcam C930e"
       statusText = "Listening and transcribing…"
 
     case "stopped-checkpoint-tail":
@@ -1678,6 +1868,8 @@ final class MacTranscriptionController: ObservableObject {
     selectedSection = section
     if section == .account {
       refreshSyncFolderRecordingBackups()
+    } else if section == .settings {
+      refreshMicrophoneInputDevices()
     }
   }
 
@@ -1689,6 +1881,93 @@ final class MacTranscriptionController: ObservableObject {
       return
     }
     toggleRecording()
+  }
+
+  func requestMacAudioPermission() {
+    macAudioPermissionPromptIsPresented = false
+    guard isRecordingPendingMacAudioPermission else {
+      return
+    }
+    statusText = "Waiting for Mac audio permission…"
+
+    // macOS may keep the permission request open while the user decides.
+    Task.detached { [weak self] in
+      let granted = CGRequestScreenCaptureAccess()
+      await self?.macAudioPermissionRequestDidFinish(granted: granted)
+    }
+  }
+
+  func continueRecordingWithMicrophoneOnly() {
+    macAudioPermissionPromptIsPresented = false
+    guard isRecordingPendingMacAudioPermission else {
+      return
+    }
+    isRecordingPendingMacAudioPermission = false
+    didOpenMacAudioPermissionSettings = false
+    macAudioPermissionRequiresRestart = false
+    nextRecordingAudioSourceOverride = .microphone
+    toggleRecording()
+  }
+
+  func cancelMacAudioPermissionRequest() {
+    macAudioPermissionPromptIsPresented = false
+    isRecordingPendingMacAudioPermission = false
+    didOpenMacAudioPermissionSettings = false
+    macAudioPermissionRequiresRestart = false
+    nextRecordingAudioSourceOverride = nil
+    statusText = isModelReady ? "Ready" : "Ready to record"
+  }
+
+  func openMacAudioPermissionSettings() {
+    guard isRecordingPendingMacAudioPermission else {
+      return
+    }
+    didOpenMacAudioPermissionSettings = true
+    openScreenCapturePrivacySettings()
+  }
+
+  func quitForMacAudioPermission() {
+    NSApp.terminate(nil)
+  }
+
+  func applicationDidBecomeActive() {
+    refreshMicrophoneInputDevices()
+    resumeAfterMicrophonePermissionIfPossible()
+    if pendingMicrophonePermissionContinuation != nil,
+       didOpenMicrophonePermissionSettings {
+      didOpenMicrophonePermissionSettings = false
+      microphonePermissionRequiresRestart = true
+      microphonePermissionPromptIsPresented = true
+      statusText = "Quit and reopen Jingo to enable the microphone"
+    }
+    guard !resumeRecordingAfterMacAudioPermissionIfPossible(),
+          isRecordingPendingMacAudioPermission,
+          didOpenMacAudioPermissionSettings
+    else {
+      return
+    }
+    didOpenMacAudioPermissionSettings = false
+    macAudioPermissionRequiresRestart = true
+    macAudioPermissionPromptIsPresented = true
+    statusText = "Quit and reopen Jingo to enable Mac audio"
+  }
+
+  func openMicrophonePermissionSettings() {
+    guard pendingMicrophonePermissionContinuation != nil else { return }
+    didOpenMicrophonePermissionSettings = true
+    openMicrophonePrivacySettings()
+  }
+
+  func cancelMicrophonePermissionRequest() {
+    microphonePermissionPromptIsPresented = false
+    microphonePermissionRequiresRestart = false
+    pendingMicrophonePermissionContinuation = nil
+    didOpenMicrophonePermissionSettings = false
+    statusText = isModelReady ? "Ready" : "Ready to record"
+  }
+
+  func quitForMicrophonePermission() {
+    NSApp.terminate(nil)
   }
 
   func toggleRecording() {
@@ -1703,6 +1982,11 @@ final class MacTranscriptionController: ObservableObject {
       return
     }
 
+    guard !isRecordingPendingMacAudioPermission else {
+      macAudioPermissionPromptIsPresented = true
+      return
+    }
+
     guard !isLoadingModel else { return }
     statusText = "Starting recording…"
 
@@ -1712,12 +1996,24 @@ final class MacTranscriptionController: ObservableObject {
         if isLiveTranscriptionEnabled, !isModelReady {
           try await loadModel()
         }
-        let audioSourceResolution = await resolveAudioSourceMode()
+        let audioSourceResolution = if let nextRecordingAudioSourceOverride {
+          (mode: nextRecordingAudioSourceOverride, meetingName: nil as String?)
+        } else {
+          await resolveAudioSourceMode()
+        }
+        nextRecordingAudioSourceOverride = nil
         let resolvedAudioSourceMode = audioSourceResolution.mode
+        guard !resolvedAudioSourceMode.requiresScreenCapturePermission
+          || CGPreflightScreenCaptureAccess()
+        else {
+          pauseRecordingForMacAudioPermission()
+          return
+        }
         if resolvedAudioSourceMode.includesMicrophone {
           statusText = "Checking microphone access…"
           guard await Self.requestMicrophonePermission() else {
-            throw MacTranscriptionError.microphonePermissionDenied
+            pauseForMicrophonePermission(continuation: .recording)
+            return
           }
         }
 
@@ -1738,9 +2034,10 @@ final class MacTranscriptionController: ObservableObject {
         speakerEmbeddings = [:]
         speakerProfileIDs = [:]
 
-        try await engine.startRecording(
+        let activeMicrophone = try await engine.startRecording(
           recordingURL: recordingStore.audioURL(for: recording),
           audioSourceMode: resolvedAudioSourceMode,
+          microphoneDeviceUID: selectedMicrophoneDeviceUID,
           liveTranscriptionEnabled: isLiveTranscriptionEnabled,
           speakerProfiles: speakerProfiles
         ) { [weak self] event in
@@ -1786,6 +2083,7 @@ final class MacTranscriptionController: ObservableObject {
             _ = finishActiveRecording()
             isRecording = false
             isFinalizingRecording = false
+            activeAudioInputDescription = nil
             resetRecordingVisualization()
             statusText = "Recording failed"
           }
@@ -1796,28 +2094,134 @@ final class MacTranscriptionController: ObservableObject {
         let recordingStatus = isLiveTranscriptionEnabled
           ? "Listening and transcribing"
           : "Recording"
-        statusText = if let meetingName = audioSourceResolution.meetingName {
-          "\(recordingStatus) · \(meetingName)"
-        } else {
-          "\(recordingStatus)…"
-        }
+        let activeMeetingAudio = resolvedAudioSourceMode.includesMeetingAudio
+          ? audioSourceResolution.meetingName ?? "Mac audio"
+          : nil
+        let activeSources = [
+          activeMeetingAudio,
+          activeMicrophone?.name,
+        ].compactMap { $0 }
+        activeAudioInputDescription = activeSources.isEmpty
+          ? nil
+          : activeSources.joined(separator: " + ")
+        statusText = activeSources.isEmpty
+          ? "\(recordingStatus)…"
+          : "\(recordingStatus) · \(activeSources.joined(separator: " + "))"
       } catch {
         cancelPendingTranscriptUpdate()
-        errorMessage = error.localizedDescription
         activeRecording = nil
         displayedRecordingID = nil
         recordingStartedAt = nil
         isRecording = false
         isFinalizingRecording = false
+        activeAudioInputDescription = nil
         resetRecordingVisualization()
-        statusText = "Recording failed"
+        if let captureError = error as? MacSystemAudioCaptureError,
+           case .permissionDenied = captureError {
+          pauseRecordingForMacAudioPermission()
+        } else {
+          errorMessage = error.localizedDescription
+          statusText = "Recording failed"
+        }
       }
     }
+  }
+
+  private func pauseRecordingForMacAudioPermission() {
+    isRecordingPendingMacAudioPermission = true
+    didOpenMacAudioPermissionSettings = false
+    macAudioPermissionRequiresRestart = false
+    macAudioPermissionPromptIsPresented = true
+    statusText = "Mac audio permission required"
+  }
+
+  private func macAudioPermissionRequestDidFinish(granted: Bool) {
+    guard isRecordingPendingMacAudioPermission else {
+      return
+    }
+    if resumeRecordingAfterMacAudioPermissionIfPossible() {
+      return
+    }
+    if granted {
+      macAudioPermissionRequiresRestart = true
+      macAudioPermissionPromptIsPresented = true
+      statusText = "Quit and reopen Jingo to enable Mac audio"
+      return
+    }
+
+    openMacAudioPermissionSettings()
+  }
+
+  @discardableResult
+  private func resumeRecordingAfterMacAudioPermissionIfPossible() -> Bool {
+    guard isRecordingPendingMacAudioPermission,
+          CGPreflightScreenCaptureAccess()
+    else {
+      return false
+    }
+    isRecordingPendingMacAudioPermission = false
+    didOpenMacAudioPermissionSettings = false
+    macAudioPermissionRequiresRestart = false
+    macAudioPermissionPromptIsPresented = false
+    toggleRecording()
+    return true
+  }
+
+  private func openScreenCapturePrivacySettings() {
+    guard let settingsURL = URL(
+      string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+    ) else {
+      return
+    }
+    NSWorkspace.shared.open(settingsURL)
+  }
+
+  private func pauseForMicrophonePermission(
+    continuation: MacMicrophonePermissionContinuation
+  ) {
+    pendingMicrophonePermissionContinuation = continuation
+    didOpenMicrophonePermissionSettings = false
+    microphonePermissionRequiresRestart = false
+    microphonePermissionPromptIsPresented = true
+    errorMessage = nil
+    statusText = "Microphone permission required"
+  }
+
+  private func resumeAfterMicrophonePermissionIfPossible() {
+    guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+          let continuation = pendingMicrophonePermissionContinuation
+    else {
+      return
+    }
+    pendingMicrophonePermissionContinuation = nil
+    didOpenMicrophonePermissionSettings = false
+    microphonePermissionRequiresRestart = false
+    microphonePermissionPromptIsPresented = false
+    switch continuation {
+    case .recording:
+      toggleRecording()
+    case .speakerSample:
+      Task {
+        await startSpeakerSampleRecording()
+      }
+    }
+  }
+
+  private func openMicrophonePrivacySettings() {
+    guard let settingsURL = URL(
+      string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+    ) else {
+      return
+    }
+    NSWorkspace.shared.open(settingsURL)
   }
 
   private func resolveAudioSourceMode() async -> (mode: MacAudioSourceMode, meetingName: String?) {
     guard audioSourceMode == .automatic else {
       return (audioSourceMode, nil)
+    }
+    guard CGPreflightScreenCaptureAccess() else {
+      return (.microphone, nil)
     }
     statusText = "Looking for a Zoom or Teams meeting…"
     let detection = await MacMeetingDetector.detectActiveMeeting()
@@ -2181,11 +2585,15 @@ final class MacTranscriptionController: ObservableObject {
     guard !isRecording, !isRecordingSpeakerSample, !isProcessingSpeakerSample else { return }
     do {
       guard await Self.requestMicrophonePermission() else {
-        throw MacTranscriptionError.microphonePermissionDenied
+        pauseForMicrophonePermission(continuation: .speakerSample)
+        return
       }
-      try await speakerSampleRecorder.start()
+      try await speakerSampleRecorder.start(
+        microphoneDeviceUID: selectedMicrophoneDeviceUID
+      )
       speakerSampleSpeechDuration = 0
       isSpeakerSampleVoiceActive = false
+      speakerSampleInputLevel = 0
       isRecordingSpeakerSample = true
       startSpeakerSampleMonitoring()
       errorMessage = nil
@@ -2205,6 +2613,7 @@ final class MacTranscriptionController: ObservableObject {
     speakerSampleMonitoringTask = nil
     isRecordingSpeakerSample = false
     isSpeakerSampleVoiceActive = false
+    speakerSampleInputLevel = 0
     isProcessingSpeakerSample = true
     defer {
       isProcessingSpeakerSample = false
@@ -2241,6 +2650,7 @@ final class MacTranscriptionController: ObservableObject {
     isRecordingSpeakerSample = false
     isSpeakerSampleVoiceActive = false
     speakerSampleSpeechDuration = 0
+    speakerSampleInputLevel = 0
     Task {
       await speakerSampleRecorder.cancel()
     }
@@ -2259,11 +2669,12 @@ final class MacTranscriptionController: ObservableObject {
         let currentUpdate = Date()
         let elapsed = min(currentUpdate.timeIntervalSince(previousUpdate), 0.25)
         previousUpdate = currentUpdate
-        let isVoiceActive = await speakerSampleRecorder.isVoiceActive()
+        let meterSnapshot = await speakerSampleRecorder.meterSnapshot()
         guard isRecordingSpeakerSample else { return }
 
-        isSpeakerSampleVoiceActive = isVoiceActive
-        if isVoiceActive {
+        isSpeakerSampleVoiceActive = meterSnapshot.isVoiceActive
+        speakerSampleInputLevel = meterSnapshot.level
+        if meterSnapshot.isVoiceActive {
           speakerSampleSpeechDuration = min(
             Self.requiredSpeakerSampleSpeechDuration,
             speakerSampleSpeechDuration + elapsed
@@ -3083,14 +3494,15 @@ private actor MacTranscriptionEngine {
   func startRecording(
     recordingURL: URL,
     audioSourceMode: MacAudioSourceMode,
+    microphoneDeviceUID: String,
     liveTranscriptionEnabled: Bool,
     speakerProfiles: [SpeakerProfile],
     eventHandler: @escaping @MainActor @Sendable (MacTranscriptionEvent) -> Void
-  ) async throws {
+  ) async throws -> MacAudioInputDevice? {
     if liveTranscriptionEnabled, loadedTranscriptionModel == nil {
       throw MacTranscriptionError.modelNotLoaded
     }
-    guard audioEngine == nil, systemAudioCapture == nil, audioMixer == nil else { return }
+    guard audioEngine == nil, systemAudioCapture == nil, audioMixer == nil else { return nil }
     self.eventHandler = eventHandler
     streamingAudioBuffer.reset()
     streamingTranscriptState.reset()
@@ -3243,6 +3655,7 @@ private actor MacTranscriptionEngine {
       }
     }
 
+    var activeMicrophone: MacAudioInputDevice?
     do {
       if audioSourceMode.includesMeetingAudio {
         let capture = MacSystemAudioCapture()
@@ -3255,6 +3668,15 @@ private actor MacTranscriptionEngine {
 
       if audioSourceMode.includesMicrophone {
         let engine = AVAudioEngine()
+        let preferredDeviceUID = if microphoneDeviceUID.isEmpty {
+          try await MacAudioInputDeviceManager.activeAutomaticInputDevice().uid
+        } else {
+          microphoneDeviceUID
+        }
+        activeMicrophone = try MacAudioInputDeviceManager.configureInput(
+          of: engine,
+          preferredDeviceUID: preferredDeviceUID
+        )
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
@@ -3323,6 +3745,7 @@ private actor MacTranscriptionEngine {
         eventHandler: eventHandler
       )
     }
+    return activeMicrophone
   }
 
   func stopRecording(speakerProfiles: [SpeakerProfile]) async {
@@ -3878,7 +4301,6 @@ private actor MacTranscriptionEngine {
 private enum MacTranscriptionError: LocalizedError {
   case invalidModelIdentifier
   case modelNotLoaded
-  case microphonePermissionDenied
   case invalidMicrophoneFormat
   case audioConversionFailed
   case audioRecordingFailed
@@ -3893,8 +4315,6 @@ private enum MacTranscriptionError: LocalizedError {
       "The transcription model identifier is invalid."
     case .modelNotLoaded:
       "Prepare the transcription model before recording."
-    case .microphonePermissionDenied:
-      "Microphone access is required. Enable it in System Settings → Privacy & Security → Microphone."
     case .invalidMicrophoneFormat:
       "The selected microphone does not provide a usable audio format."
     case .audioConversionFailed:

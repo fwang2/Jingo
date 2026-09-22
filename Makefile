@@ -3,6 +3,8 @@ MISE := $(HOME)/.local/bin/mise
 TUIST := $(MISE) exec -- tuist
 SWIFTLINT := $(MISE) exec -- swiftlint
 SWIFTFORMAT := $(MISE) exec -- swiftformat
+MAC_DERIVED_DATA := $(CURDIR)/.build/JingoMacDerivedData
+MAC_APP := $(MAC_DERIVED_DATA)/Build/Products/Debug/Jingo.app
 
 all: bootstrap project_file
 
@@ -31,6 +33,28 @@ build_dev_debug:
 
 build_dev_release:
 	$(TUIST) build --configuration Release --build-output-path .build/ JingoDev
+
+build_mac_debug:
+	xcodebuild -workspace Jingo.xcworkspace -scheme JingoMac -configuration Debug -destination 'platform=macOS' -derivedDataPath "$(MAC_DERIVED_DATA)" build
+
+run_mac: build_mac_debug
+	@terminated_pids=""; \
+	for pid in $$(pgrep -x Jingo 2>/dev/null || true); do \
+		kill "$$pid"; \
+		terminated_pids="$$terminated_pids $$pid"; \
+	done; \
+	for pid in $$terminated_pids; do \
+		attempts=0; \
+		while kill -0 "$$pid" 2>/dev/null; do \
+			attempts=$$((attempts + 1)); \
+			if [ "$$attempts" -ge 50 ]; then \
+				echo "Jingo did not stop within 5 seconds; launch cancelled." >&2; \
+				exit 1; \
+			fi; \
+			sleep 0.1; \
+		done; \
+	done; \
+	open "$(MAC_APP)"
 
 format:
 	$(SWIFTLINT) lint --force-exclude --fix .
@@ -61,4 +85,4 @@ clean: clear_analyze
 	rm -rf build
 	$(TUIST) clean
 
-.SILENT: all project_file update hot appstore hot_appstore build_debug build_release format secrets
+.SILENT: all project_file update hot appstore hot_appstore build_debug build_release build_mac_debug run_mac format secrets

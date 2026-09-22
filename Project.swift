@@ -76,6 +76,7 @@ let macInfoPlist: [String: Plist.Value] = [
   "CFBundleIconFile": "AppIcon",
   "CFBundleShortVersionString": Plist.Value(stringLiteral: version),
   "LSApplicationCategoryType": "public.app-category.productivity",
+  "LSMultipleInstancesProhibited": true,
   "NSMicrophoneUsageDescription": "Jingo uses the microphone for offline live transcription.",
   "NSScreenCaptureUsageDescription": "Jingo captures audio played by this Mac for local meeting recording and transcription.",
 ]
@@ -204,6 +205,7 @@ let macTargets: [Target] = [
       "Sources/SharedTranscription/**",
     ],
     resources: ["MacApp/Resources/**"],
+    entitlements: "MacApp/Support/JingoMac.entitlements",
     dependencies: [
       .external(name: "FluidAudio"),
       .external(name: "HuggingFace"),
@@ -221,10 +223,11 @@ let macTargets: [Target] = [
     settings: .settings(
       base: [
         "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
-        "CODE_SIGN_IDENTITY": "-",
+        // A certificate-backed identity lets macOS privacy grants survive local rebuilds.
+        "CODE_SIGN_IDENTITY": "Apple Development",
         "CODE_SIGNING_REQUIRED": "YES",
-        "CODE_SIGN_STYLE": "Manual",
-        "DEVELOPMENT_TEAM": "",
+        "CODE_SIGN_STYLE": "Automatic",
+        "DEVELOPMENT_TEAM": SettingValue(stringLiteral: personalDevelopmentTeam),
         "MARKETING_VERSION": SettingValue(stringLiteral: version),
         "OTHER_LDFLAGS": "$(inherited) -lc++",
         "PRODUCT_NAME": "Jingo",
@@ -241,6 +244,7 @@ let macTargets: [Target] = [
     sources: [
       "Tests/MacAppTests/**",
       "MacApp/Sources/MacAudioCapture.swift",
+      "MacApp/Sources/MacAudioInputDevice.swift",
       "MacApp/Sources/MacSpeechPhraseSegmenter.swift",
       "MacApp/Sources/MacICloudSettings.swift",
       "MacApp/Sources/MacMeetingDetector.swift",

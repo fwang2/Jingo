@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
@@ -73,6 +74,13 @@ struct MacMeetingDetection: Equatable, Sendable {
 @MainActor
 enum MacMeetingDetector {
   static func detectActiveMeeting() async -> MacMeetingDetection? {
+    // Enumerating other apps' windows with ScreenCaptureKit prompts for Screen
+    // Recording access. Automatic mode must remain microphone-only until the
+    // user has explicitly granted that permission for online-meeting capture.
+    guard CGPreflightScreenCaptureAccess() else {
+      return nil
+    }
+
     var runningProvidersByBundleIdentifier: [String: MacMeetingProvider] = [:]
     for application in NSWorkspace.shared.runningApplications {
       guard let provider = MacMeetingProvider.identify(

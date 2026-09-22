@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreGraphics
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
@@ -11,6 +12,12 @@ enum MacAudioSourceMode: String, CaseIterable, Codable, Identifiable, Sendable {
   case meetingAudio
   case meetingAndMicrophone
 
+  static let selectableCases: [Self] = [
+    .automatic,
+    .microphone,
+    .meetingAndMicrophone,
+  ]
+
   var id: Self {
     self
   }
@@ -21,13 +28,13 @@ enum MacAudioSourceMode: String, CaseIterable, Codable, Identifiable, Sendable {
       "Automatic"
 
     case .microphone:
-      "Microphone"
+      "In-person meeting"
 
     case .meetingAudio:
       "Mac audio"
 
     case .meetingAndMicrophone:
-      "Mac audio + microphone"
+      "Online meeting"
     }
   }
 
@@ -55,11 +62,18 @@ enum MacAudioSourceMode: String, CaseIterable, Codable, Identifiable, Sendable {
     includesMicrophone && includesMeetingAudio
   }
 
-  func resolved(detectedMeeting: Bool) -> Self {
+  var requiresScreenCapturePermission: Bool {
+    includesMeetingAudio
+  }
+
+  func resolved(
+    detectedMeeting: Bool,
+    canCaptureMeetingAudio: Bool = true
+  ) -> Self {
     guard self == .automatic else {
       return self
     }
-    return detectedMeeting ? .meetingAndMicrophone : .microphone
+    return detectedMeeting && canCaptureMeetingAudio ? .meetingAndMicrophone : .microphone
   }
 }
 
@@ -267,6 +281,9 @@ final class MacSystemAudioCapture: NSObject, @unchecked Sendable {
     chunkHandler: @escaping @Sendable (MacCapturedAudioChunk) -> Void,
     failureHandler: @escaping @Sendable (String) -> Void
   ) async throws {
+    guard CGPreflightScreenCaptureAccess() else {
+      throw MacSystemAudioCaptureError.permissionDenied
+    }
     let content = try await SCShareableContent.excludingDesktopWindows(
       false,
       onScreenWindowsOnly: false
@@ -436,13 +453,17 @@ extension MacSystemAudioCapture: SCStreamDelegate {
 
 // MARK: - MacSystemAudioCaptureError
 
-private enum MacSystemAudioCaptureError: LocalizedError {
+enum MacSystemAudioCaptureError: LocalizedError {
+  case permissionDenied
   case noDisplayAvailable
   case invalidAudioBuffer
   case audioConversionFailed
 
   var errorDescription: String? {
     switch self {
+    case .permissionDenied:
+      "Mac audio capture requires Screen & System Audio Recording access."
+
     case .noDisplayAvailable:
       "No display is available for Mac audio capture."
 

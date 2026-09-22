@@ -1,6 +1,136 @@
+import AVFoundation
 import XCTest
 
 final class MacAudioCaptureTests: XCTestCase {
+  func testAudioInputDeviceIdentityUsesPersistentUID() {
+    let device = MacAudioInputDevice(
+      deviceID: 42,
+      uid: "test-device-uid",
+      name: "Test Microphone",
+      isSystemDefault: true
+    )
+
+    // swiftlint:disable:next xctassertnodifference_preferred
+    XCTAssertEqual(device.id, "test-device-uid")
+  }
+
+  func testDetectsAndConfiguresDefaultAudioInputDevice() throws {
+    let devices = MacAudioInputDeviceManager.availableInputDevices()
+    guard let defaultDevice = devices.first(where: \.isSystemDefault) else {
+      throw XCTSkip("This Mac does not expose a default audio input device.")
+    }
+
+    let configuredDevice = try MacAudioInputDeviceManager.configureInput(
+      of: AVAudioEngine(),
+      preferredDeviceUID: ""
+    )
+
+    // swiftlint:disable:next xctassertnodifference_preferred
+    XCTAssertEqual(configuredDevice, defaultDevice)
+  }
+
+  func testAutomaticMicrophonePrefersSystemDefaultAndKeepsFallbacks() {
+    let externalDevice = MacAudioInputDevice(
+      deviceID: 10,
+      uid: "external",
+      name: "External Microphone",
+      isSystemDefault: false
+    )
+    let systemDefault = MacAudioInputDevice(
+      deviceID: 20,
+      uid: "system-default",
+      name: "MacBook Pro Microphone",
+      isSystemDefault: true
+    )
+
+    let candidates = MacAudioInputDeviceManager.inputDeviceCandidates(
+      preferredDeviceUID: "",
+      devices: [externalDevice, systemDefault]
+    )
+
+    // swiftlint:disable:next xctassertnodifference_preferred
+    XCTAssertEqual(candidates, [systemDefault, externalDevice])
+  }
+
+  func testManualMicrophoneOverrideFallsBackToSystemDefault() {
+    let selectedDevice = MacAudioInputDevice(
+      deviceID: 10,
+      uid: "selected",
+      name: "Selected Microphone",
+      isSystemDefault: false
+    )
+    let systemDefault = MacAudioInputDevice(
+      deviceID: 20,
+      uid: "system-default",
+      name: "MacBook Pro Microphone",
+      isSystemDefault: true
+    )
+
+    let candidates = MacAudioInputDeviceManager.inputDeviceCandidates(
+      preferredDeviceUID: selectedDevice.uid,
+      devices: [systemDefault, selectedDevice]
+    )
+
+    // swiftlint:disable:next xctassertnodifference_preferred
+    XCTAssertEqual(candidates, [selectedDevice, systemDefault])
+  }
+
+  func testAutomaticMicrophoneExcludesVirtualDevices() {
+    let virtualDefault = MacAudioInputDevice(
+      deviceID: 10,
+      uid: "virtual-default",
+      name: "Microsoft Teams Audio",
+      isSystemDefault: true,
+      transportType: kAudioDeviceTransportTypeVirtual
+    )
+    let physicalDevice = MacAudioInputDevice(
+      deviceID: 20,
+      uid: "physical",
+      name: "External Microphone",
+      isSystemDefault: false,
+      transportType: kAudioDeviceTransportTypeUSB
+    )
+
+    let candidates = MacAudioInputDeviceManager.inputDeviceCandidates(
+      preferredDeviceUID: "",
+      devices: [virtualDefault, physicalDevice]
+    )
+
+    // swiftlint:disable:next xctassertnodifference_preferred
+    XCTAssertEqual(candidates, [physicalDevice])
+  }
+
+  func testManualMicrophoneCanSelectVirtualDevice() {
+    let virtualDevice = MacAudioInputDevice(
+      deviceID: 10,
+      uid: "virtual",
+      name: "ZoomAudioDevice",
+      isSystemDefault: false,
+      transportType: kAudioDeviceTransportTypeVirtual
+    )
+    let physicalDefault = MacAudioInputDevice(
+      deviceID: 20,
+      uid: "physical-default",
+      name: "MacBook Pro Microphone",
+      isSystemDefault: true,
+      transportType: kAudioDeviceTransportTypeBuiltIn
+    )
+
+    let candidates = MacAudioInputDeviceManager.inputDeviceCandidates(
+      preferredDeviceUID: virtualDevice.uid,
+      devices: [physicalDefault, virtualDevice]
+    )
+
+    // swiftlint:disable:next xctassertnodifference_preferred
+    XCTAssertEqual(candidates, [virtualDevice, physicalDefault])
+  }
+
+  func testAutomaticMicrophoneRequiresNonzeroSignal() {
+    XCTAssertFalse(MacAudioInputDeviceManager.isUsableInputSignal(peakAmplitude: 0))
+    XCTAssertFalse(MacAudioInputDeviceManager.isUsableInputSignal(peakAmplitude: 0.000_001))
+    XCTAssertTrue(MacAudioInputDeviceManager.isUsableInputSignal(peakAmplitude: 0.001))
+  }
+
   func testTimelineBufferPlacesSamplesAtTheirFrameOffset() {
     var buffer = MacAudioTimelineBuffer()
 
@@ -31,6 +161,12 @@ final class MacAudioCaptureTests: XCTestCase {
   }
 
   func testAudioSourceModesSelectExpectedInputs() {
+    // swiftlint:disable:next xctassertnodifference_preferred
+    XCTAssertEqual(MacAudioSourceMode.selectableCases, [
+      .automatic,
+      .microphone,
+      .meetingAndMicrophone,
+    ])
     XCTAssertTrue(MacAudioSourceMode.automatic.includesMicrophone)
     XCTAssertFalse(MacAudioSourceMode.automatic.includesMeetingAudio)
     XCTAssertTrue(MacAudioSourceMode.microphone.includesMicrophone)
@@ -39,6 +175,10 @@ final class MacAudioCaptureTests: XCTestCase {
     XCTAssertTrue(MacAudioSourceMode.meetingAudio.includesMeetingAudio)
     XCTAssertTrue(MacAudioSourceMode.meetingAndMicrophone.includesMicrophone)
     XCTAssertTrue(MacAudioSourceMode.meetingAndMicrophone.includesMeetingAudio)
+    XCTAssertFalse(MacAudioSourceMode.automatic.requiresScreenCapturePermission)
+    XCTAssertFalse(MacAudioSourceMode.microphone.requiresScreenCapturePermission)
+    XCTAssertTrue(MacAudioSourceMode.meetingAudio.requiresScreenCapturePermission)
+    XCTAssertTrue(MacAudioSourceMode.meetingAndMicrophone.requiresScreenCapturePermission)
     XCTAssertFalse(MacAudioSourceMode.automatic.combinesAudioSources)
     XCTAssertFalse(MacAudioSourceMode.microphone.combinesAudioSources)
     XCTAssertFalse(MacAudioSourceMode.meetingAudio.combinesAudioSources)
@@ -53,6 +193,13 @@ final class MacAudioCaptureTests: XCTestCase {
     )
     XCTAssertEqual(
       MacAudioSourceMode.automatic.resolved(detectedMeeting: false),
+      .microphone
+    )
+    XCTAssertEqual(
+      MacAudioSourceMode.automatic.resolved(
+        detectedMeeting: true,
+        canCaptureMeetingAudio: false
+      ),
       .microphone
     )
     XCTAssertEqual(

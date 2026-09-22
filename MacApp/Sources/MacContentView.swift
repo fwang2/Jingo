@@ -22,6 +22,7 @@ struct MacContentView: View {
   @State private var speakerProfileNameDraft = ""
   @State private var transcriptIsNearBottom = true
   @State private var summaryInstructionsTab: SummaryInstructionsTab = .edit
+  @State private var advancedMicrophoneOverrideIsExpanded = false
 
   #if DEBUG
     @State private var developerBenchmarkResult: MacDeveloperBenchmarkResult?
@@ -56,6 +57,7 @@ struct MacContentView: View {
       guard newValue == .active else {
         return
       }
+      controller.applicationDidBecomeActive()
       controller.refreshSyncFolderIfNeeded()
     }
     .onChange(of: focusedSpeakerProfileID) { oldValue, newValue in
@@ -71,6 +73,72 @@ struct MacContentView: View {
       Button("OK") { controller.errorMessage = nil }
     } message: {
       Text(controller.errorMessage ?? "Unknown error")
+    }
+    .alert(
+      controller.microphonePermissionRequiresRestart
+        ? "Restart Jingo to Enable the Microphone"
+        : "Allow Microphone Access",
+      isPresented: $controller.microphonePermissionPromptIsPresented
+    ) {
+      if controller.microphonePermissionRequiresRestart {
+        Button("Quit Jingo") {
+          controller.quitForMicrophonePermission()
+        }
+      }
+      Button("Open System Settings") {
+        controller.openMicrophonePermissionSettings()
+      }
+      Button("Cancel", role: .cancel) {
+        controller.cancelMicrophonePermissionRequest()
+      }
+    } message: {
+      if controller.microphonePermissionRequiresRestart {
+        Text(
+          "Jingo still cannot see microphone permission. If it is enabled in System Settings, quit Jingo and reopen the canonical build."
+        )
+      } else {
+        Text(
+          "Enable Jingo in System Settings → Privacy & Security → Microphone, then return to Jingo. Recording will continue automatically."
+        )
+      }
+    }
+    .alert(
+      controller.macAudioPermissionRequiresRestart
+        ? "Restart Jingo to Enable Mac Audio"
+        : "Allow Mac Audio Capture",
+      isPresented: $controller.macAudioPermissionPromptIsPresented
+    ) {
+      if controller.macAudioPermissionRequiresRestart {
+        Button("Quit Jingo") {
+          controller.quitForMacAudioPermission()
+        }
+        Button("Open System Settings") {
+          controller.openMacAudioPermissionSettings()
+        }
+      } else {
+        Button("Request Permission") {
+          controller.requestMacAudioPermission()
+        }
+        Button("Use Microphone Only") {
+          controller.continueRecordingWithMicrophoneOnly()
+        }
+      }
+      Button("Cancel", role: .cancel) {
+        controller.cancelMacAudioPermissionRequest()
+      }
+    } message: {
+      if controller.macAudioPermissionRequiresRestart {
+        Text(
+          """
+          If Jingo is enabled in Screen & System Audio Recording, quit it and run it again from Xcode.
+          macOS activates this permission for the newly signed build after relaunch.
+          """
+        )
+      } else {
+        Text(
+          "Mac audio requires Screen & System Audio Recording access. Jingo will wait while you grant it; microphone-only recording is optional."
+        )
+      }
     }
     .alert("Rename Speaker", isPresented: renameSpeakerIsPresented) {
       TextField("Name", text: $speakerNameDraft)
@@ -234,7 +302,7 @@ struct MacContentView: View {
     VStack(spacing: 0) {
       pageHeader(
         title: "Live Transcript",
-        subtitle: "English and Chinese, transcribed locally"
+        subtitle: controller.liveTranscriptAudioSubtitle
       )
 
       Divider()
@@ -1071,7 +1139,7 @@ struct MacContentView: View {
                 Spacer()
 
                 Picker("Audio source", selection: $controller.audioSourceMode) {
-                  ForEach(MacAudioSourceMode.allCases) { mode in
+                  ForEach(MacAudioSourceMode.selectableCases) { mode in
                     Text(mode.title).tag(mode)
                   }
                 }
@@ -1081,6 +1149,46 @@ struct MacContentView: View {
                 .accessibilityIdentifier("settings.audioSource")
               }
               .padding(16)
+
+              if controller.audioSourceMode.includesMicrophone {
+                Divider()
+                  .padding(.leading, 16)
+
+                HStack(spacing: 16) {
+                  VStack(alignment: .leading, spacing: 4) {
+                    Text("Microphone")
+                      .font(.body.weight(.medium))
+                    Text("Jingo uses the Mac default and falls back if it is unavailable.")
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                  }
+
+                  Spacer()
+
+                  Text(controller.selectedMicrophoneDisplayName)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                }
+                .padding(16)
+
+                DisclosureGroup(
+                  "Advanced microphone override",
+                  isExpanded: $advancedMicrophoneOverrideIsExpanded
+                ) {
+                  HStack {
+                    Text("Use a specific microphone")
+                      .foregroundStyle(.secondary)
+                    Spacer()
+                    microphoneDevicePicker(width: 280)
+                      .disabled(controller.isRecording || controller.isRecordingSpeakerSample)
+                      .accessibilityIdentifier("settings.microphoneDevice")
+                  }
+                  .padding(.top, 10)
+                }
+                .font(.caption)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
+              }
 
               Divider()
                 .padding(.leading, 16)
@@ -2121,16 +2229,16 @@ struct MacContentView: View {
   private var audioSourceDescription: String {
     switch controller.audioSourceMode {
     case .automatic:
-      "Use Mac audio and microphone for a detected Zoom or Teams meeting; otherwise use the microphone."
+      "Use the microphone immediately. If Mac audio access was previously granted, detect Zoom or Teams and include their audio automatically."
 
     case .microphone:
-      "Record voices heard by the selected microphone."
+      "Record an in-person meeting with the automatic microphone."
 
     case .meetingAudio:
-      "Record audio played by this Mac, including Zoom or Teams."
+      "Record an online meeting with Mac audio and the automatic microphone."
 
     case .meetingAndMicrophone:
-      "Record meeting participants and your microphone together."
+      "Record an online meeting with Mac audio and the automatic microphone."
     }
   }
 
@@ -2337,6 +2445,22 @@ struct MacContentView: View {
         .disabled(request.profileID != nil || controller.isRecordingSpeakerSample || controller.isProcessingSpeakerSample)
         .accessibilityIdentifier("speakerEnrollment.name")
 
+      HStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("Microphone")
+            .font(.body.weight(.medium))
+          Text(controller.selectedMicrophoneDisplayName)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
+        Spacer()
+
+        microphoneDevicePicker(width: 230)
+          .disabled(controller.isRecordingSpeakerSample || controller.isProcessingSpeakerSample)
+          .accessibilityIdentifier("speakerEnrollment.microphoneDevice")
+      }
+
       VStack(spacing: 14) {
         Image(systemName: controller.isRecordingSpeakerSample ? "waveform.circle.fill" : "person.wave.2")
           .font(.system(size: 46))
@@ -2354,6 +2478,18 @@ struct MacContentView: View {
           ProgressView()
         } else if controller.isRecordingSpeakerSample {
           VStack(spacing: 7) {
+            HStack(spacing: 8) {
+              Image(systemName: "mic.fill")
+                .foregroundStyle(.secondary)
+              ProgressView(value: controller.speakerSampleInputLevel)
+                .frame(width: 180)
+              Text(controller.isSpeakerSampleVoiceActive ? "Voice detected" : "Listening")
+                .font(.caption)
+                .foregroundStyle(
+                  controller.isSpeakerSampleVoiceActive ? Color.green : Color.secondary
+                )
+            }
+
             ProgressView(
               value: controller.speakerSampleSpeechDuration,
               total: MacTranscriptionController.requiredSpeakerSampleSpeechDuration
@@ -2449,6 +2585,34 @@ struct MacContentView: View {
       MacTranscriptionController.requiredSpeakerSampleSpeechDuration
     )
     return String(format: "%.1f of 10.0 seconds", recordedSeconds)
+  }
+
+  private func microphoneDevicePicker(width: CGFloat) -> some View {
+    Picker("Microphone", selection: $controller.selectedMicrophoneDeviceUID) {
+      Text(
+        "Automatic — "
+          + (MacAudioInputDeviceManager.automaticInputDevice(
+            from: controller.microphoneInputDevices
+          )?.name
+            ?? "No microphone")
+      )
+      .tag("")
+
+      if !controller.selectedMicrophoneDeviceUID.isEmpty,
+         !controller.microphoneInputDevices.contains(where: {
+           $0.uid == controller.selectedMicrophoneDeviceUID
+         }) {
+        Text(controller.selectedMicrophoneDisplayName)
+          .tag(controller.selectedMicrophoneDeviceUID)
+      }
+
+      ForEach(controller.microphoneInputDevices) { device in
+        Text(device.isSystemDefault ? "\(device.name) — System Default" : device.name)
+          .tag(device.uid)
+      }
+    }
+    .labelsHidden()
+    .frame(width: width)
   }
 
   private func duration(_ value: TimeInterval) -> String {

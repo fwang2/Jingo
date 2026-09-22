@@ -18,6 +18,7 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertTrue(element("transcript.canvas").waitForExistence(timeout: 5))
     XCTAssertTrue(element("transcript.empty").exists)
     XCTAssertTrue(app.staticTexts["Ready when you are"].exists)
+    XCTAssertTrue(app.staticTexts["Audio input: Automatic microphone selection"].exists)
 
     app.buttons["Recordings"].click()
     XCTAssertTrue(app.staticTexts["No recordings yet"].waitForExistence(timeout: 2))
@@ -26,7 +27,7 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertTrue(app.staticTexts["Default model"].waitForExistence(timeout: 2))
     XCTAssertTrue(element("settings.audioSource").exists)
     XCTAssertTrue(app.staticTexts[
-      "Use Mac audio and microphone for a detected Zoom or Teams meeting; otherwise use the microphone."
+      "Use the microphone immediately. If Mac audio access was previously granted, detect Zoom or Teams and include their audio automatically."
     ].exists)
     XCTAssertTrue(element("settings.transcriptFontSize").exists)
     XCTAssertTrue(app.staticTexts["14 pt"].exists)
@@ -77,6 +78,7 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertTrue(app.staticTexts["00:09"].exists)
     XCTAssertTrue(element("recording.waveform").exists)
     XCTAssertTrue(app.buttons["Stop"].exists)
+    XCTAssertTrue(app.staticTexts["Audio input: Logitech Webcam C930e"].exists)
   }
 
   func testCheckpointShowsStableSpeakerTurnsAndLiveTail() {
@@ -90,6 +92,9 @@ final class JingoMacUITests: XCTestCase {
     XCTAssertTrue(element("speakerTurn.text.1").label.contains("separates the speakers"))
     XCTAssertTrue(element("transcript.liveTail").label.contains("still being transcribed"))
     XCTAssertTrue(app.buttons["Stop"].exists)
+    XCTAssertTrue(app.staticTexts[
+      "Audio input: Mac audio + Logitech Webcam C930e"
+    ].exists)
   }
 
   func testStoppedRecordingKeepsSpeakerTurnsTimestampsAndFinalTail() {
@@ -372,6 +377,8 @@ final class JingoMacUITests: XCTestCase {
   private func launch(scenario: String) {
     app = XCUIApplication()
     app.launchEnvironment["JINGO_UI_TEST_SCENARIO"] = scenario
+    app.launchEnvironment["JINGO_UI_TEST_WINDOWED"] = "1"
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
   }
